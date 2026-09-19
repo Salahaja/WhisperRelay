@@ -254,6 +254,7 @@ end)
 step("the sender is told which character to whisper instead", function()
   local c = newClient("Salahaja")
   c:cmd("to Salabeard")
+  c:cmd("reply on")    -- off by default: it is a bot reply in their window
   c:whisper("Bobby", "you there?")
   c:drain()
 
@@ -269,6 +270,7 @@ end)
 step("one person is not answered twice inside the cooldown", function()
   local c = newClient("Salahaja")
   c:cmd("to Salabeard")
+  c:cmd("reply on")
   c:cmd("every 300")
   c:whisper("Bobby", "one")
   c:whisper("Bobby", "two")
@@ -368,6 +370,7 @@ end)
 step("outgoing whispers are spaced out, not sent in one frame", function()
   local c = newClient("Salahaja")
   c:cmd("to Salabeard")
+  c:cmd("reply on")
   c:whisper("Bobby", "one")
   c:whisper("Charlie", "two")
 
@@ -771,7 +774,7 @@ step("a client that stopped saying it was there stops being the target", functio
 
   -- Salabeard's client is gone; its last word was three minutes ago.
   clock.t = clock.t + 200
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   if a.WR.Target() ~= nil then
     error("still forwarding to " .. tostring(a.WR.Target()) .. " long after it went quiet")
   end
@@ -788,7 +791,7 @@ step("switching to a different alt moves the target", function()
   -- Logged out of Salabeard, logged in on Mahislap.
   clock.t = clock.t + 30
   local c = newClient("Mahislap")
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   if a.WR.Target() ~= "Mahislap" then
     error("still aimed at " .. tostring(a.WR.Target()) .. " after switching alt")
   end
@@ -820,6 +823,7 @@ end)
 step("the auto-answer names the character it found", function()
   local a = newClient("Salahaja")
   local b = newClient("Salabeard")
+  a:cmd("reply on")
   a:deliver("Bobby", "hi")
   a:drain()
   local back = toTarget(a, "Bobby")
@@ -868,7 +872,7 @@ step("a corrupt presence line is skipped, not fatal", function()
   local a = newClient("Salahaja")
   files["WhisperRelay_presence.txt"] =
     "garbage\nP~Salabeard~" .. clock.t .. "\nP~broken~notanumber\n~~~\n"
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   if a.WR.Target() ~= "Salabeard" then
     error("resolved " .. tostring(a.WR.Target()) .. " from a file with junk in it")
   end
@@ -1277,7 +1281,7 @@ step("auto mode moves to whoever else is there", function()
   clock.t = clock.t + 5
   local c = newClient("Mahislap")
 
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   if a.WR.Target() ~= "Mahislap" then
     error("expected the newest, got " .. tostring(a.WR.Target()))
   end
@@ -1299,7 +1303,7 @@ step("a character that logs back in is used again", function()
   clock.t = clock.t + 120
   b.WR.sinceBeat = 999
   b:tick(1)
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   if a.WR.Target() ~= "Salabeard" then
     error("did not come back after logging in again: " ..
       tostring(a.WR.Target()))
@@ -1378,7 +1382,7 @@ end)
 step("your own alts are learned from logging in, with nothing typed", function()
   local a = newClient("Salahaja")
   local b = newClient("Salabeard")
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   a.WR.Target()
   if not hasName(a, "Salabeard") then
     error("did not learn the character that logged in beside it")
@@ -1386,7 +1390,7 @@ step("your own alts are learned from logging in, with nothing typed", function()
 
   clock.t = clock.t + 5
   local c = newClient("Mahislap")
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   a.WR.Target()
   if not hasName(a, "Mahislap") then error("did not learn the next alt") end
   clock.t = clock.t - 5
@@ -1395,7 +1399,7 @@ end)
 step("it never learns itself", function()
   local a = newClient("Salahaja")
   local b = newClient("Salabeard")
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   a.WR.Target()
   if hasName(a, "Salahaja") then error("put itself in its own list") end
 end)
@@ -1407,7 +1411,7 @@ step("a name that logged in does not outrank one you typed", function()
   -- /wf to turns auto off, and the presence file is only read in auto mode.
   a:cmd("auto")
   local b = newClient("Salabeard")
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   a.WR.Target()
   if not hasName(a, "Salabeard") then
     error("never learned the alt, so this proves nothing")
@@ -1430,7 +1434,7 @@ step("a remembered name is not used just because it is remembered", function()
   local c = newClient("Salahaja")
   c:cmd("to Bobby")
   c:cmd("auto")           -- back to deciding from the shared folder
-  c.WR.autoName, c.WR.autoAt = nil, nil
+  c.WR.others, c.WR.othersAt = nil, nil
   if c.WR.Target() ~= nil then
     error("picked " .. tostring(c.WR.Target()) .. " with nobody logged in")
   end
@@ -1448,7 +1452,7 @@ end)
 step("/wf list says which of them is logged in right now", function()
   local a = newClient("Salahaja")
   local b = newClient("Salabeard")
-  a.WR.autoName, a.WR.autoAt = nil, nil
+  a.WR.others, a.WR.othersAt = nil, nil
   a.WR.Target()                     -- learns Salabeard from the shared folder
   a:cmd("to Bobby")                 -- and a name typed by hand
   a.chat = {}
@@ -1484,6 +1488,305 @@ step("the list does not grow without limit", function()
     error("remembered " .. table.getn(known(c)) .. " names")
   end
   if not hasName(c, "Alt25") then error("dropped the most recent one") end
+end)
+
+----------------------------------------------------------------------
+-- more than two accounts on the one machine
+----------------------------------------------------------------------
+
+--[[ Four accounts means three windows you are not looking at. Picking the
+     likeliest one leaves two that can still hide a whisper. ]]
+step("a whisper reaches every other client, not just one", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  local d = newClient("Delta")
+
+  b:deliver("Bobby", "you around?")
+  b:drain()
+
+  for _, name in ipairs({ "Alpha", "Charlie", "Delta" }) do
+    local got = toTarget(b, name)
+    if table.getn(got) ~= 1 then
+      error(name .. " got " .. table.getn(got) .. " forwards, expected 1")
+    end
+    if not string.find(got[1].text, "Bobby", 1, true) then
+      error("the forward to " .. name .. " lost the sender: " .. got[1].text)
+    end
+  end
+  if table.getn(toTarget(b, "Bravo")) > 0 then error("forwarded to itself") end
+end)
+
+step("whichever one is whispered, the rest hear about it", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  local d = newClient("Delta")
+
+  d:deliver("Bobby", "and now you?")
+  d:drain()
+  for _, name in ipairs({ "Alpha", "Bravo", "Charlie" }) do
+    if table.getn(toTarget(d, name)) ~= 1 then
+      error(name .. " heard nothing when Delta was whispered")
+    end
+  end
+end)
+
+--[[ The loop guard has to hold for all of them. With four clients a forward
+     landing on three others is three chances to bounce it back. ]]
+step("four clients do not bounce a forward between them", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  local d = newClient("Delta")
+
+  b:deliver("Bobby", "you around?")
+  b:drain()
+
+  local relayed = {}
+  for _, m in ipairs(b.sent) do table.insert(relayed, m) end
+  for _, other in ipairs({ a, c, d }) do
+    for _, m in ipairs(relayed) do
+      if m.target == other.name then other:deliver("Bravo", m.text) end
+    end
+    other:drain()
+    if table.getn(other.sent) > 0 then
+      error(other.name .. " passed the forward on: " .. other.sent[1].text)
+    end
+  end
+end)
+
+step("one of your own windows whispering you is not forwarded", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+
+  -- Charlie is third in the list, not first: the guard must check them all.
+  b:deliver("Charlie", "bring me a stack of runes")
+  b:drain()
+  if table.getn(b.sent) > 0 then
+    error("relayed a message from another of your own clients: " .. b.sent[1].text)
+  end
+end)
+
+step("a queue pop is told to every other client", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+
+  b.queues[1] = { status = "confirm", map = "Warsong Gulch" }
+  b:fire("UPDATE_BATTLEFIELD_STATUS")
+  b:drain()
+
+  for _, name in ipairs({ "Alpha", "Charlie" }) do
+    local got = toTarget(b, name)
+    if table.getn(got) ~= 1 then
+      error(name .. " was not told about the pop")
+    end
+    if string.sub(got[1].text, 1, 2) ~= ">!" then
+      error("not sent as an alert: " .. got[1].text)
+    end
+  end
+end)
+
+step("a long whisper is split once and every part goes to everyone", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+
+  b:deliver("Bobby", string.rep("abcdefghij", 40))
+  b:drain()
+  local toA = table.getn(toTarget(b, "Alpha"))
+  local toC = table.getn(toTarget(b, "Charlie"))
+  if toA < 2 then error("Alpha got " .. toA .. " parts") end
+  if toA ~= toC then
+    error("Alpha got " .. toA .. " parts and Charlie got " .. toC)
+  end
+end)
+
+step("with nobody else logged in, nothing goes anywhere", function()
+  local a = newClient("Alpha")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  if table.getn(a.sent) > 0 then
+    error("forwarded to " .. tostring(a.sent[1].target) .. " with nobody there")
+  end
+end)
+
+step("the echo names everyone it went to", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  b.chat = {}
+  b:deliver("Bobby", "you around?")
+
+  local named = false
+  for _, m in ipairs(b.chat) do
+    if string.find(m, "Alpha", 1, true) and string.find(m, "Charlie", 1, true) then
+      named = true
+    end
+  end
+  if not named then error("the echo did not list both windows") end
+end)
+
+--[[ Answering the sender has to name ONE character to go to, so it names the
+     window that spoke most recently -- the best guess at where you are. ]]
+step("the auto-answer names the most recently active window", function()
+  local a = newClient("Alpha")
+  clock.t = clock.t + 10
+  local c = newClient("Charlie")
+  local b = newClient("Bravo")
+  b:cmd("reply on")
+  b.WR.others, b.WR.othersAt = nil, nil
+
+  b:deliver("Bobby", "you around?")
+  b:drain()
+  local back = toTarget(b, "Bobby")
+  if table.getn(back) ~= 1 then error("answered " .. table.getn(back) .. " times") end
+  if not string.find(back[1].text, "Charlie", 1, true) then
+    error("named the wrong window: " .. back[1].text)
+  end
+  clock.t = clock.t - 10
+end)
+
+step("the auto-answer stays off unless asked for", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  b:deliver("Bobby", "you around?")
+  b:drain()
+  if table.getn(toTarget(b, "Bobby")) > 0 then
+    error("answered the sender without being asked to")
+  end
+end)
+
+----------------------------------------------------------------------
+-- the settings window
+----------------------------------------------------------------------
+
+local function panelOf(c) return c.byName["WhisperRelaySettings"] end
+
+local function boxFor(c, key)
+  local p = panelOf(c)
+  for _, b in ipairs((p and p.boxes) or {}) do
+    if b.key == key then return b end
+  end
+  return nil
+end
+
+step("/wf config opens a window with a switch for each setting", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local p = panelOf(c)
+  if not p then error("no settings window was built") end
+  if not p:IsShown() then error("built it but did not show it") end
+
+  for _, key in ipairs({ "enabled", "alerts", "popup", "inline",
+                         "replyLink", "autoReply", "announce" }) do
+    if not boxFor(c, key) then error("no switch for " .. key) end
+  end
+end)
+
+step("the switches show what the setting currently is", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  -- autoReply is off by default, enabled is on.
+  if boxFor(c, "autoReply").tick:IsShown() then
+    error("showed the auto-answer as on when it is off by default")
+  end
+  if not boxFor(c, "enabled").tick:IsShown() then
+    error("showed forwarding as off when it is on by default")
+  end
+end)
+
+step("clicking a switch changes the setting and the tick", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local b = boxFor(c, "autoReply")
+  b.scripts.OnClick()
+  if not c.WR.config.autoReply then error("the click did not change the setting") end
+  if not b.tick:IsShown() then error("the setting changed but the tick did not") end
+
+  b.scripts.OnClick()
+  if c.WR.config.autoReply then error("it did not turn back off") end
+  if b.tick:IsShown() then error("the tick stayed on") end
+end)
+
+step("a switch changed by command shows up when reopened", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  c:cmd("config")                -- closed again
+  c:cmd("reply on")
+  c:cmd("config")
+  if not boxFor(c, "autoReply").tick:IsShown() then
+    error("the window did not pick up a change made by command")
+  end
+end)
+
+step("turning the popup off from the window takes down one on screen", function()
+  local b = newClient("Salabeard")
+  b:deliver("Salahaja", ">! Warsong Gulch is ready to join")
+  local popup = b.byName["WhisperRelayPopup"]
+  if not popup:IsShown() then error("no popup to take down") end
+
+  b:cmd("config")
+  boxFor(b, "popup").scripts.OnClick()
+  if popup:IsShown() then error("the popup stayed up") end
+end)
+
+--[[ The one thing no slash command shows as plainly: whether it is doing
+     anything at all right now. ]]
+step("the window says where forwards are going", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  b.WR.others, b.WR.othersAt = nil, nil
+  b:cmd("config")
+  local said = panelOf(b).state:GetText()
+  if not (string.find(said, "Alpha", 1, true) and string.find(said, "Charlie", 1, true)) then
+    error("it says: " .. said)
+  end
+end)
+
+--[[ Nothing logged in is not a fault, and must not read like one -- it
+     starts again by itself when another window appears. ]]
+step("with nobody else logged in it says so, without alarm", function()
+  local a = newClient("Alpha")
+  a:cmd("config")
+  local said = panelOf(a).state:GetText()
+  if not string.find(said, "No other character", 1, true) then
+    error("it says: " .. said)
+  end
+  if string.find(said, "/wf to", 1, true) then
+    error("told you to fix something that is not broken: " .. said)
+  end
+end)
+
+step("with forwarding switched off it says that instead", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("off")
+  a:cmd("config")
+  local said = panelOf(a).state:GetText()
+  if not string.find(said, "off", 1, true) then error("it says: " .. said) end
+end)
+
+step("/wf config closes it again", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  c:cmd("config")
+  if panelOf(c):IsShown() then error("did not close") end
+end)
+
+step("the settings window is not the event frame or the popup", function()
+  local b = newClient("Salabeard")
+  b:cmd("config")
+  if panelOf(b) == b.frame then error("it replaced the event frame") end
+  b:deliver("Salahaja", ">> Bobby: still here?")
+  local ok = false
+  for _, m in ipairs(b.chat) do
+    if string.find(m, "still here?", 1, true) then ok = true end
+  end
+  if not ok then error("the addon stopped handling whispers") end
 end)
 
 print(string.format("\n%d passed, %d failed\n", pass, fail))

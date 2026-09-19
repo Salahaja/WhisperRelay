@@ -1,11 +1,14 @@
 --[[ Whisper Relay
 
-When a whisper arrives on this character it is forwarded, as a whisper, to one
-character you nominate -- the one you are actually playing on the other
-account. The forward carries who it came from, so you can answer.
+A whisper arriving on one of your windows is forwarded, as a whisper, to every
+other one running on this machine. Four accounts means three windows you are
+not looking at, and whichever one you happen to be in front of has the message.
+The forward carries who it came from, with the name clickable, so you can
+answer from there.
 
 It can also answer the sender for you, telling them which character you are on
-so they stop whispering the one nobody is watching.
+so they stop whispering the one nobody is watching. Off by default: that is a
+bot reply appearing in someone else's window, which should be a decision.
 
 The forwards travel as ordinary whispers. That is deliberate: the relay itself
 needs nothing shared, so it works whether the other account is a second copy
@@ -13,11 +16,11 @@ of the client, a second machine, or a friend covering for you. Only working out
 WHO to forward to on its own needs the shared folder, and naming a character by
 hand replaces that.
 
-Loops are the danger here. Two characters each forwarding to the other would
-bounce one message between them until the server disconnects both for spam, so
-three things are never forwarded and never auto-answered: anything from the
-character we forward TO, anything already carrying the forward marker, and
-ourselves.
+Loops are the danger here. Every client forwarding to every other is the
+arrangement out of the box, and it is also the obvious way to bounce one
+message around the ring until the server disconnects all of them for spam. So
+three things are never forwarded: anything from ANY of the windows we forward
+to, anything already carrying a relay marker, and ourselves.
 ]]
 
 WhisperRelay = {}
@@ -65,7 +68,9 @@ WR.ready = false
 local defaults = {
   enabled = true,
   target = nil,          -- the character forwards go to
-  autoReply = true,
+  -- Off by default: answering someone who whispered you is a bot reply in
+  -- their window, and that should be a decision, not a surprise.
+  autoReply = false,
   -- {char} is filled in with the target. Kept as a token so the text stays
   -- correct after the target changes.
   replyText = "Not watching this one right now - I'm on {char}, whisper me there.",
@@ -209,34 +214,50 @@ function WR.ReadPresence()
 end
 
 --- The other character logged in right now, or nil if there isn't one.
-function WR.AutoTarget()
+--[[ EVERY other client on this machine, newest heartbeat first.
+
+     All of them, not the likeliest one: running four accounts means three
+     windows you are not looking at, and picking one leaves two that can still
+     hide a whisper. Whichever window you happen to be in front of has it.
+
+     Ordered by heartbeat because the first name is used wherever exactly one
+     is needed -- the sender's auto-answer names a character to go to, and the
+     most recently active one is the best guess at where you are. ]]
+function WR.LiveOthers()
   local now = time()
-  if WR.autoName ~= nil and WR.autoAt and (now - WR.autoAt) < LOOKUP_CACHE then
-    return WR.autoName or nil
+  if WR.others and WR.othersAt and (now - WR.othersAt) < LOOKUP_CACHE then
+    return WR.others
   end
 
-  local best, bestAt = nil, 0
+  local found = {}
   for name, stamp in pairs(WR.ReadPresence()) do
-    --[[ Every character that has ever logged in beside this one gets
-         remembered, so your own alts build the list with nothing typed at
-         all. It keeps working after the other client closes, because the
-         rosters can then confirm the same names. ]]
+    -- Every character that logs in beside this one is remembered, so the list
+    -- builds itself across however many accounts are running.
     WR.Remember(name, false)
+
     --[[ Skip anyone the server has since refused, unless they have said they
          are here again SINCE that refusal. Without the second half this
          picks the logged-out character straight back up: their last
          heartbeat is still recent, and stays recent for three more minutes. ]]
     local refused = WR.offline[name]
     local gone = refused and stamp <= refused
-    if name ~= WR.me and not gone and (now - stamp) < LIVE and stamp > bestAt then
-      best, bestAt = name, stamp
+    if name ~= WR.me and not gone and (now - stamp) < LIVE then
+      table.insert(found, { name = name, at = stamp })
     end
   end
 
-  -- false rather than nil, so "looked and found nobody" is still a cached answer.
-  WR.autoName = best or false
-  WR.autoAt = now
-  return best
+  table.sort(found, function(a, b) return a.at > b.at end)
+
+  local names = {}
+  for i = 1, table.getn(found) do names[i] = found[i].name end
+  WR.others, WR.othersAt = names, now
+  return names
+end
+
+--- The single most recently active other client, or nil.
+function WR.AutoTarget()
+  local live = WR.LiveOthers()
+  return live[1]
 end
 
 ----------------------------------------------------------------------
@@ -295,33 +316,50 @@ function WR.Forget(name)
   WR.config.known = out
 end
 
---- Where forwards go: whoever you are playing, or whoever you nominated.
-function WR.Target()
-  --[[ The shared folder decides, and only it. Deliberately nothing clever
-       here: this machine's own clients are the only thing that can be known
-       for certain, and guessing from anywhere else -- a guild roster, a name
-       that was typed once -- risks forwarding private messages to somebody
-       who merely happens to be online. A named target is used only when
-       there is no shared folder to consult. ]]
+--[[ Everywhere a forward should go.
+
+     In automatic mode that is every other client on this machine. A name you
+     typed by hand is one name, because you said one name. ]]
+function WR.Targets()
   if WR.config.auto then
-    local live = WR.AutoTarget()
-    if live then return live end
-    -- Auto mode with nobody else logged in means exactly that.
-    if WR.FileAPI() then return nil end
+    local live = WR.LiveOthers()
+    if table.getn(live) > 0 then return live end
+    -- Auto mode with nobody else logged in means exactly that: nowhere.
+    if WR.FileAPI() then return {} end
   end
 
   local named = WR.config.target
-  if named and WR.offline[named] then return nil end
-  return named
+  if not named or WR.offline[named] then return {} end
+  return { named }
+end
+
+--[[ Where a forward goes when exactly one name is needed: the auto-answer
+     has to name one character for the sender to go to, and the most recently
+     active window is the best guess at where you are.
+
+     The shared folder decides, and only it. Deliberately nothing clever here:
+     this machine's own clients are the only thing that can be known for
+     certain, and guessing from anywhere else -- a guild roster, a name typed
+     once -- risks forwarding private messages to somebody who merely happens
+     to be online. ]]
+function WR.Target()
+  return WR.Targets()[1]
 end
 
 ----------------------------------------------------------------------
 
 --- Is this a message we must leave alone to avoid a loop?
-function WR.IsLoop(sender, message, target)
+function WR.IsLoop(sender, message, targets)
   if not sender or sender == "" then return true end
   if sender == WR.me then return true end
-  if target and sender == target then return true end
+
+  --[[ Every one of them, not just the first. With four accounts running, a
+       message from C is a message from one of our own windows however far
+       down the list C happens to sit. ]]
+  for i = 1, table.getn(targets or {}) do
+    if sender == targets[i] then return true end
+  end
+
   -- Already relayed once: someone else's relay, or ours coming back.
   local head = string.sub(message or "", 1, 2)
   if head == MARK or head == ALERT then return true end
@@ -349,14 +387,19 @@ end
 --- Send something that is not a forwarded message and needs no reply.
 function WR.Alert(text)
   if not WR.ready or not WR.config.enabled or not WR.config.alerts then return end
-  local target = WR.Target()
-  if not target then return end
+  local targets = WR.Targets()
+  if table.getn(targets) == 0 then return end
+
   -- A line break would split this into two whispers, the second of which
   -- carries no marker and would be forwarded straight back.
   local body = string.gsub(tostring(text or ""), "%s+", " ")
-  WR.Queue(ALERT .. " " .. body, target)
+  for i = 1, table.getn(targets) do
+    WR.Queue(ALERT .. " " .. body, targets[i])
+  end
+
   if WR.config.announce then
-    DEFAULT_CHAT_FRAME:AddMessage(DIM .. "told " .. target .. ": " .. text .. "|r")
+    DEFAULT_CHAT_FRAME:AddMessage(DIM .. "told " ..
+      table.concat(targets, ", ") .. ": " .. text .. "|r")
   end
 end
 
@@ -607,6 +650,188 @@ function WR.ShowPopup(who, what)
   f:Show()
 end
 
+----------------------------------------------------------------------
+-- the settings window
+----------------------------------------------------------------------
+
+--[[ Every switch in one place, because there are now eight of them and
+     remembering eight slash commands to find out what a thing is currently
+     set to is not a settings system.
+
+     The commands all still work -- they are what a macro can use, and what
+     this window is written in terms of -- but the window is how you see the
+     whole state at once, including the one thing no command can show you as
+     clearly: which windows it is actually forwarding to right now. ]]
+local PANEL_W = 300
+local ROW_H = 22
+
+--[[ Field, label, and what it means. Order is the order they appear. The
+     `note` is the reason, not a restatement of the label: a switch you can
+     see but not understand is a switch you leave alone. ]]
+local SWITCHES = {
+  { key = "enabled",   label = "Forward whispers",
+    note = "the whole thing, on or off" },
+  { key = "alerts",    label = "Pass on queue pops",
+    note = "battleground and dungeon invites expire on a timer" },
+  { key = "popup",     label = "Popup for a pop",
+    note = "a box on screen, not only a line in chat" },
+  { key = "inline",    label = "Clickable name in the message",
+    note = "off puts it on a line underneath instead" },
+  { key = "replyLink", label = "  ...or a reply line if that fails",
+    note = "a chat addon can take the rewrite away" },
+  { key = "autoReply", label = "Answer whoever whispered me",
+    note = "a bot reply in their window; off by default" },
+  { key = "announce",  label = "Note each forward here",
+    note = "so you can see it happening" },
+}
+
+local function checkbox(parent, index, switch)
+  local b = CreateFrame("Button", nil, parent)
+  b:SetWidth(PANEL_W - 24)
+  b:SetHeight(ROW_H)
+  b:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -(40 + (index - 1) * ROW_H))
+  b:EnableMouse(true)
+
+  local box = b:CreateTexture(nil, "ARTWORK")
+  box:SetTexture("Interface\\Buttons\\WHITE8X8")
+  box:SetVertexColor(0.35, 0.35, 0.38, 1)
+  box:SetWidth(12)
+  box:SetHeight(12)
+  box:SetPoint("LEFT", b, "LEFT", 0, 0)
+
+  local tick = b:CreateTexture(nil, "OVERLAY")
+  tick:SetTexture("Interface\\Buttons\\WHITE8X8")
+  tick:SetVertexColor(0.4, 0.85, 0.47, 1)
+  tick:SetWidth(6)
+  tick:SetHeight(6)
+  tick:SetPoint("LEFT", b, "LEFT", 3, 0)
+
+  local text = b:CreateFontString(nil, "OVERLAY")
+  text:SetFont("Fonts\\FRIZQT__.TTF", 11)
+  text:SetTextColor(0.9, 0.9, 0.9)
+  text:SetPoint("LEFT", b, "LEFT", 20, 0)
+  text:SetText(switch.label)
+
+  b.tick, b.key, b.note = tick, switch.key, switch.note
+  b:SetScript("OnClick", function()
+    WR.config[switch.key] = not WR.config[switch.key]
+    -- Turning the popup off should take down one already on screen.
+    if switch.key == "popup" and not WR.config.popup then WR.HidePopup() end
+    WR.RefreshPanel()
+  end)
+  return b
+end
+
+function WR.BuildPanel()
+  if WR.panel then return WR.panel end
+
+  local f = CreateFrame("Button", "WhisperRelaySettings", UIParent)
+  f:SetWidth(PANEL_W)
+  f:SetHeight(64 + table.getn(SWITCHES) * ROW_H + 46)
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  f:SetFrameStrata("DIALOG")
+  f:EnableMouse(true)
+  f:Hide()
+
+  local bg = f:CreateTexture(nil, "BACKGROUND")
+  bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+  bg:SetVertexColor(0.04, 0.04, 0.05, 0.94)
+  bg:SetAllPoints(f)
+
+  local edges = {}
+  for i = 1, 4 do
+    local t = f:CreateTexture(nil, "BORDER")
+    t:SetTexture("Interface\\Buttons\\WHITE8X8")
+    t:SetVertexColor(0.56, 0.82, 1, 0.8)
+    edges[i] = t
+  end
+  edges[1]:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  edges[1]:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  edges[1]:SetHeight(1)
+  edges[2]:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  edges[2]:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  edges[2]:SetHeight(1)
+  edges[3]:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  edges[3]:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  edges[3]:SetWidth(1)
+  edges[4]:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  edges[4]:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  edges[4]:SetWidth(1)
+
+  f.title = f:CreateFontString(nil, "OVERLAY")
+  f.title:SetFont("Fonts\\FRIZQT__.TTF", 13)
+  f.title:SetTextColor(0.56, 0.82, 1)
+  f.title:SetPoint("TOP", f, "TOP", 0, -12)
+  f.title:SetText("Whisper Relay")
+
+  f.boxes = {}
+  for i = 1, table.getn(SWITCHES) do
+    f.boxes[i] = checkbox(f, i, SWITCHES[i])
+  end
+
+  --[[ The one thing no slash command shows as plainly: where forwards are
+       going at this moment, and therefore whether it is doing anything. ]]
+  f.state = f:CreateFontString(nil, "OVERLAY")
+  f.state:SetFont("Fonts\\FRIZQT__.TTF", 11)
+  f.state:SetWidth(PANEL_W - 24)
+  f.state:SetPoint("BOTTOM", f, "BOTTOM", 0, 26)
+
+  f.hint = f:CreateFontString(nil, "OVERLAY")
+  f.hint:SetFont("Fonts\\FRIZQT__.TTF", 10)
+  f.hint:SetTextColor(0.6, 0.6, 0.6)
+  f.hint:SetPoint("BOTTOM", f, "BOTTOM", 0, 10)
+  f.hint:SetText("click outside the switches to close")
+
+  f:SetScript("OnClick", function() WR.HidePanel() end)
+
+  WR.panel = f
+  return f
+end
+
+function WR.RefreshPanel()
+  local f = WR.panel
+  if not f then return end
+
+  for i = 1, table.getn(f.boxes) do
+    local b = f.boxes[i]
+    if WR.config[b.key] then b.tick:Show() else b.tick:Hide() end
+  end
+
+  local targets = WR.Targets()
+  local n = table.getn(targets)
+  if not WR.config.enabled then
+    f.state:SetTextColor(0.83, 0.31, 0.33)
+    f.state:SetText("Forwarding is off.")
+  elseif n > 0 then
+    f.state:SetTextColor(0.4, 0.85, 0.47)
+    f.state:SetText("Forwarding to " .. table.concat(targets, ", "))
+  elseif WR.config.auto then
+    --[[ Not a fault, and worded so it does not read as one: with nothing
+         else logged in there is nowhere to forward to, and it starts again
+         by itself the moment another window appears. ]]
+    f.state:SetTextColor(0.62, 0.65, 0.72)
+    f.state:SetText("No other character logged in, so nothing is being " ..
+      "forwarded. It starts again on its own.")
+  else
+    f.state:SetTextColor(0.83, 0.31, 0.33)
+    f.state:SetText("No target. /wf to <character>, or /wf auto")
+  end
+end
+
+function WR.HidePanel()
+  if WR.panel then WR.panel:Hide() end
+end
+
+function WR.TogglePanel()
+  local f = WR.BuildPanel()
+  if f:IsShown() then
+    f:Hide()
+  else
+    WR.RefreshPanel()
+    f:Show()
+  end
+end
+
 --- An alert arriving from the other client. Loud, and nobody to reply to.
 function WR.ShowAlert(message, sender)
   local text = message or ""
@@ -640,23 +865,28 @@ function WR.OnWhisper(message, sender)
 
   if not WR.config.enabled then return end
 
-  --[[ Resolved once per whisper. In auto mode this is nil whenever the other
-       client is not running, and that is the right answer: with nobody at the
-       other end there is nothing to forward to, and telling the sender to go
-       whisper a character who is offline would be worse than saying nothing. ]]
-  local target = WR.Target()
-  if not target then return end
-  if WR.IsLoop(sender, message, target) then return end
+  --[[ Resolved once per whisper. Empty whenever no other client is running,
+       and that is the right answer: with nobody at the other end there is
+       nothing to forward to, and telling the sender to go whisper a
+       character who is offline would be worse than saying nothing. ]]
+  local targets = WR.Targets()
+  local count = table.getn(targets)
+  if count == 0 then return end
+  if WR.IsLoop(sender, message, targets) then return end
 
-  for _, part in ipairs(WR.Parts(sender, message or "")) do
-    WR.Queue(part, target)
+  local parts = WR.Parts(sender, message or "")
+  for t = 1, count do
+    for p = 1, table.getn(parts) do
+      WR.Queue(parts[p], targets[t])
+    end
   end
 
   if WR.config.announce then
     DEFAULT_CHAT_FRAME:AddMessage(DIM .. "forwarded " .. sender .. " to " ..
-      target .. "|r")
+      table.concat(targets, ", ") .. "|r")
   end
 
+  local target = targets[1]
   if WR.ShouldReply(sender, target) then
     WR.replied[sender] = time()
     WR.Queue(WR.ReplyBody(target), sender)
@@ -706,7 +936,7 @@ function WR.TargetGone(name)
   WR.queue = kept
 
   WR.offline[name] = time()
-  WR.autoName, WR.autoAt = nil, nil
+  WR.others, WR.othersAt = nil, nil
 
   local lost = (dropped > 0)
     and ("  " .. dropped .. " queued message(s) were not sent.") or ""
@@ -813,6 +1043,7 @@ end
 local function Usage()
   Print("|cffe0a22c/wf auto|r -- find your other character instead of naming one")
   Print("|cffe0a22c/wf list|r, |cffe0a22c/wf forget <character>|r -- the names it has learned")
+  Print("|cffe0a22c/wf config|r -- every switch in one window")
   Print("|cffe0a22c/wf to <character>|r -- forward whispers to that character")
   Print("|cffe0a22c/wf|r status  |  on  |  off  |  reply  |  echo  |  link  |  test")
   Print("|cffe0a22c/wf reply <text>|r -- what to tell the sender ({char} = target)")
@@ -852,7 +1083,7 @@ function WR.Command(input)
     WR.config.enabled = true
     -- Turning it back on means "try them again", so forget the refusal.
     WR.offline = {}
-    WR.autoName, WR.autoAt = nil, nil
+    WR.others, WR.othersAt = nil, nil
     Print(WR.config.target and ("forwarding to " .. WR.config.target .. ".")
       or "enabled, but no target yet: /wf to <character>")
 
@@ -889,7 +1120,7 @@ function WR.Command(input)
 
   elseif cmd == "auto" then
     WR.config.auto = not WR.config.auto
-    WR.autoName, WR.autoAt = nil, nil
+    WR.others, WR.othersAt = nil, nil
     if WR.config.auto then
       WR.sinceBeat = BEAT
       WR.Beat(0)
@@ -944,6 +1175,9 @@ function WR.Command(input)
       WR.Forget(name)
       Print("forgot " .. name .. ".")
     end
+
+  elseif cmd == "config" or cmd == "options" or cmd == "settings" then
+    WR.TogglePanel()
 
   elseif cmd == "alerts" then
     WR.config.alerts = not WR.config.alerts

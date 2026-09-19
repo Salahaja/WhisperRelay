@@ -1,9 +1,10 @@
 # Whisper Relay
 
-Dual-boxing on WoW 1.12: when a whisper lands on the character you are *not*
-watching, it is forwarded — as a whisper — to the character you are, with the
-sender's name attached. It can also answer the sender to tell them which
-character you are actually on.
+Multi-boxing on WoW 1.12: a whisper landing on one of your windows is
+forwarded — as a whisper — to **every other one running on this machine**.
+Four accounts means three windows you are not looking at, and whichever one
+you happen to be in front of has the message, with the sender's name
+clickable so you can answer from there.
 
 The forwards travel as ordinary whispers, so the relay itself works whether
 your other account is a second copy of the client, a second machine, or a
@@ -21,11 +22,20 @@ on. Whispers to the window you are not watching arrive in the one you are:
 
     >> Bobby: you around for Strat tonight?
 
-and Bobby is told, at most once every five minutes:
-
-    Not watching this one right now - I'm on Salabeard, whisper me there.
-
 Switch to a different alt and it follows, with nothing typed.
+
+It can also answer Bobby to say which character you are on — but that is a bot
+reply appearing in someone else's window, so it is **off by default**. Turn it
+on in `/wf config` or with `/wf reply on`.
+
+## Settings
+
+    /wf config
+
+Every switch in one window, with what it is currently set to, and the one
+thing no command shows as plainly: which windows it is forwarding to right
+now. With nothing else logged in it says so and starts again on its own when
+another window appears.
 
 ### How it knows
 
