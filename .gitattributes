@@ -1,0 +1,4 @@
+# Lua and the .toc are text; normalise in the repo, checkout native.
+*.lua text
+*.toc text
+*.md  text
