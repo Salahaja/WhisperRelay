@@ -37,6 +37,15 @@ thing no command shows as plainly: which windows it is forwarding to right
 now. With nothing else logged in it says so and starts again on its own when
 another window appears.
 
+It also holds the message sent back to whoever whispered you. **Default** is
+the stock wording; **Custom** is a box you type your own into. `{char}` is
+replaced with the character you are on, and the line underneath shows the
+finished sentence exactly as they will receive it.
+
+The two are kept separately, so switching to Default and back does not throw
+away what you wrote. Typing in the box switches to Custom by itself. Enter or
+clicking away saves; Escape abandons the edit.
+
 ### How it knows
 
 Two ways, in that order.
@@ -123,7 +132,8 @@ showing as text means the chat frame is not turning links into links.
 | `/wf on` / `/wf off` | Stop and start forwarding |
 | `/wf test` | Send a test forward, so you can check the target without waiting for a real whisper |
 | `/wf reply` / `/wf reply on|off` | Turn the auto-answer on or off |
-| `/wf reply <text>` | Set what it says. `{char}` is replaced with the target |
+| `/wf reply <text>` | Set your own wording. `{char}` is replaced with the target |
+| `/wf reply default` | Back to the stock wording, keeping yours for later |
 | `/wf every <seconds>` | How often one person may be auto-answered (default 300) |
 | `/wf inline` | Clickable name inside the message (default) or on a line underneath |
 | `/wf link` | The fallback line, when the message could not be rewritten |

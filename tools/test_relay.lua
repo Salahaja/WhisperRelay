@@ -130,6 +130,17 @@ local function newClient(name)
     function f:SetFrameStrata() end
     function f:CreateTexture() return region() end
     function f:CreateFontString() return region() end
+    -- EditBox. Focus is modelled because the panel deliberately refuses to
+    -- overwrite text while it is being typed.
+    f.focused = false
+    function f:SetAutoFocus() end
+    function f:SetMaxLetters(n) self.maxLetters = n end
+    function f:SetFocus() self.focused = true end
+    function f:ClearFocus() self.focused = false end
+    function f:HasFocus() return self.focused end
+    function f:HighlightText() end
+    function f:SetTextInsets() end
+    function f:EnableKeyboard() end
 
     -- The first frame is the addon's event frame; the popup comes later and
     -- must not quietly take its place.
@@ -1787,6 +1798,192 @@ step("the settings window is not the event frame or the popup", function()
     if string.find(m, "still here?", 1, true) then ok = true end
   end
   if not ok then error("the addon stopped handling whispers") end
+end)
+
+----------------------------------------------------------------------
+-- writing the reply message
+----------------------------------------------------------------------
+
+local function replyBox(c) return c.byName["WhisperRelayReplyBox"] end
+
+local function sentTo(c, who)
+  local out = {}
+  for _, m in ipairs(toTarget(c, who)) do table.insert(out, m.text) end
+  return out
+end
+
+step("the window has a box with the message in it", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local e = replyBox(c)
+  if not e then error("no edit box was built") end
+  if not string.find(e:GetText(), "{char}", 1, true) then
+    error("the box does not show the message: " .. e:GetText())
+  end
+end)
+
+step("typing a message and pressing enter saves it", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:cmd("reply on")
+  a:cmd("config")
+
+  local e = replyBox(a)
+  e:SetFocus()
+  e:SetText("gone fishing, try {char}")
+  e.scripts.OnEnterPressed()
+
+  if a.WR.config.replyText ~= "gone fishing, try {char}" then
+    error("saved: " .. tostring(a.WR.config.replyText))
+  end
+  if a.WR.config.replyDefault then
+    error("typing did not switch it off the stock wording")
+  end
+
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  local got = sentTo(a, "Bobby")
+  if table.getn(got) ~= 1 then error("answered " .. table.getn(got) .. " times") end
+  if got[1] ~= "gone fishing, try Salabeard" then
+    error("Bobby received: " .. got[1])
+  end
+end)
+
+step("clicking away from the box saves it too", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local e = replyBox(c)
+  e:SetFocus()
+  e:SetText("back in five")
+  e.scripts.OnEditFocusLost()
+  if c.WR.config.replyText ~= "back in five" then
+    error("saved: " .. tostring(c.WR.config.replyText))
+  end
+end)
+
+--[[ Escape is "forget this edit", and the only way to find out whether it
+     worked is that the box goes back to what is actually stored. ]]
+step("escape abandons an edit instead of saving it", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local e = replyBox(c)
+  e:SetFocus()
+  e:SetText("half a sen")
+  e.scripts.OnEscapePressed()
+  if c.WR.config.replyText == "half a sen" then
+    error("escape saved the edit anyway")
+  end
+  if e:GetText() == "half a sen" then
+    error("the box kept the abandoned text")
+  end
+end)
+
+step("Default and Custom choose between two wordings", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:cmd("reply on")
+  a:cmd("config")
+  local p = panelOf(a)
+
+  local e = replyBox(a)
+  e:SetFocus()
+  e:SetText("mine says this, {char}")
+  e.scripts.OnEnterPressed()
+
+  p.useDefault.scripts.OnClick()
+  if not a.WR.config.replyDefault then error("Default did not take") end
+  a:deliver("Bobby", "one")
+  a:drain()
+  if not string.find(sentTo(a, "Bobby")[1], "Not watching", 1, true) then
+    error("Default sent: " .. sentTo(a, "Bobby")[1])
+  end
+
+  --[[ The whole reason there are two fields: going back to Custom must find
+       what was typed, not an empty box. ]]
+  p.useCustom.scripts.OnClick()
+  if a.WR.config.replyText ~= "mine says this, {char}" then
+    error("Custom lost the typed message: " .. tostring(a.WR.config.replyText))
+  end
+end)
+
+step("the box shows the stock wording while Default is chosen", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local p, e = panelOf(c), replyBox(c)
+  p.useCustom.scripts.OnClick()
+  e:SetFocus()
+  e:SetText("custom thing")
+  e.scripts.OnEnterPressed()
+
+  p.useDefault.scripts.OnClick()
+  if string.find(e:GetText(), "custom thing", 1, true) then
+    error("still showing the custom text while Default is chosen")
+  end
+  if not string.find(e:GetText(), "Not watching", 1, true) then
+    error("the box shows: " .. e:GetText())
+  end
+end)
+
+--[[ Refresh runs on every click in this window. Replacing the text under the
+     cursor mid-sentence is what makes a settings window feel broken. ]]
+step("refreshing does not overwrite what is being typed", function()
+  local c = newClient("Salahaja")
+  c:cmd("config")
+  local e = replyBox(c)
+  e:SetFocus()
+  e:SetText("half written")
+  c.WR.RefreshPanel()
+  if e:GetText() ~= "half written" then
+    error("the text changed under the cursor: " .. e:GetText())
+  end
+end)
+
+--[[ {char} is the one part of this nobody can picture, so the window shows
+     the finished sentence. ]]
+step("the preview shows what they actually receive", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a.WR.others, a.WR.othersAt = nil, nil
+  a:cmd("config")
+  local said = panelOf(a).preview:GetText()
+  if string.find(said, "{char}", 1, true) then
+    error("the preview still shows the token: " .. said)
+  end
+  if not string.find(said, "Salabeard", 1, true) then
+    error("the preview does not name the live window: " .. said)
+  end
+end)
+
+step("/wf reply default goes back to the stock wording", function()
+  local c = newClient("Salahaja")
+  c:cmd("reply something of my own")
+  if c.WR.config.replyDefault then error("a typed message did not take") end
+  c:cmd("reply default")
+  if not c.WR.config.replyDefault then error("/wf reply default did nothing") end
+  if c.WR.config.replyText ~= "something of my own" then
+    error("going back to default threw the custom one away")
+  end
+end)
+
+step("an emptied box falls back rather than whispering nothing", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:cmd("reply on")
+  a:cmd("config")
+  -- Custom, then emptied: Default would answer with the stock wording and
+  -- prove nothing about an empty custom message.
+  panelOf(a).useCustom.scripts.OnClick()
+  local e = replyBox(a)
+  e:SetFocus()
+  e:SetText("")
+  e.scripts.OnEditFocusLost()
+  if a.WR.config.replyDefault then error("not actually on the custom message") end
+
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  local got = sentTo(a, "Bobby")
+  if table.getn(got) ~= 1 then error("answered " .. table.getn(got) .. " times") end
+  if got[1] == "" then error("whispered an empty message") end
 end)
 
 print(string.format("\n%d passed, %d failed\n", pass, fail))

@@ -42,6 +42,10 @@ local MARK = ">>"
      exist. Both markers are loop guards, so neither is ever passed on. ]]
 local ALERT = ">!"
 
+--[[ The stock answer. Kept as a constant so "use the default" is always the
+     same thing, however many times it has been switched away from. ]]
+local DEFAULT_REPLY = "Not watching this one right now - I'm on {char}, whisper me there."
+
 -- 1.12 drops a whisper over 255 characters. Leave room for the marker and the
 -- sender's name rather than finding out by having text silently vanish.
 local WHISPER_MAX = 250
@@ -73,7 +77,10 @@ local defaults = {
   autoReply = false,
   -- {char} is filled in with the target. Kept as a token so the text stays
   -- correct after the target changes.
-  replyText = "Not watching this one right now - I'm on {char}, whisper me there.",
+  --[[ Two fields rather than one, so switching back to the default does not
+       throw away what you had typed. Coming back to Custom finds it again. ]]
+  replyDefault = true,
+  replyText = "Busy on another character - whisper {char} instead.",
   replyCooldown = 300,   -- seconds, per sender
   announce = true,       -- echo forwards into this window too
   -- The clickable name under an arriving forward. This is the half that runs
@@ -458,7 +465,9 @@ function WR.ShouldReply(sender, target)
 end
 
 function WR.ReplyBody(target)
-  local text = WR.config.replyText or ""
+  local text = WR.config.replyDefault and DEFAULT_REPLY
+    or (WR.config.replyText or DEFAULT_REPLY)
+  if text == "" then text = DEFAULT_REPLY end
   return (string.gsub(text, "{char}", target or WR.Target() or "?"))
 end
 
@@ -727,7 +736,9 @@ function WR.BuildPanel()
 
   local f = CreateFrame("Button", "WhisperRelaySettings", UIParent)
   f:SetWidth(PANEL_W)
-  f:SetHeight(64 + table.getn(SWITCHES) * ROW_H + 46)
+  -- Switches, then the reply section (label, two buttons, box, preview),
+  -- then the state line and the hint at the bottom.
+  f:SetHeight(50 + table.getn(SWITCHES) * ROW_H + 96 + 52)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   f:SetFrameStrata("DIALOG")
   f:EnableMouse(true)
@@ -769,6 +780,103 @@ function WR.BuildPanel()
     f.boxes[i] = checkbox(f, i, SWITCHES[i])
   end
 
+  ------------------------------------------------------------------
+  -- what to say back
+  ------------------------------------------------------------------
+
+  local top = -(40 + table.getn(SWITCHES) * ROW_H + 10)
+
+  f.replyLabel = f:CreateFontString(nil, "OVERLAY")
+  f.replyLabel:SetFont("Fonts\\FRIZQT__.TTF", 11)
+  f.replyLabel:SetTextColor(0.9, 0.9, 0.9)
+  f.replyLabel:SetPoint("TOPLEFT", f, "TOPLEFT", 12, top)
+  f.replyLabel:SetText("What to tell them:")
+
+  --[[ Default and Custom are a pair of buttons rather than a single toggle,
+       because "which of these am I using" has to be answerable at a glance --
+       a toggle only tells you that once you have worked out which way round
+       it is. ]]
+  local function modeButton(label, wantDefault, x)
+    local b = CreateFrame("Button", nil, f)
+    b:SetWidth(70)
+    b:SetHeight(18)
+    b:SetPoint("TOPLEFT", f, "TOPLEFT", x, top - 18)
+    b:EnableMouse(true)
+
+    local fill = b:CreateTexture(nil, "ARTWORK")
+    fill:SetTexture("Interface\\Buttons\\WHITE8X8")
+    fill:SetAllPoints(b)
+
+    local text = b:CreateFontString(nil, "OVERLAY")
+    text:SetFont("Fonts\\FRIZQT__.TTF", 11)
+    text:SetPoint("CENTER", b, "CENTER", 0, 0)
+    text:SetText(label)
+
+    b.fill, b.label, b.wantDefault = fill, text, wantDefault
+    b:SetScript("OnClick", function()
+      WR.config.replyDefault = wantDefault
+      if not wantDefault and (WR.config.replyText or "") == "" then
+        -- Somewhere to start from, rather than an empty box.
+        WR.config.replyText = DEFAULT_REPLY
+      end
+      WR.RefreshPanel()
+    end)
+    return b
+  end
+
+  f.useDefault = modeButton("Default", true, 12)
+  f.useCustom = modeButton("Custom", false, 88)
+
+  --[[ An EditBox needs its font set or it draws nothing at all, and needs
+       autofocus off or opening this window swallows your keyboard. ]]
+  local boxFrame = CreateFrame("Frame", nil, f)
+  boxFrame:SetWidth(PANEL_W - 24)
+  boxFrame:SetHeight(24)
+  boxFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 12, top - 40)
+
+  local boxBg = boxFrame:CreateTexture(nil, "BACKGROUND")
+  boxBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+  boxBg:SetVertexColor(0.12, 0.12, 0.14, 1)
+  boxBg:SetAllPoints(boxFrame)
+
+  local edit = CreateFrame("EditBox", "WhisperRelayReplyBox", boxFrame)
+  edit:SetPoint("TOPLEFT", boxFrame, "TOPLEFT", 5, -3)
+  edit:SetPoint("BOTTOMRIGHT", boxFrame, "BOTTOMRIGHT", -5, 3)
+  edit:SetFont("Fonts\\FRIZQT__.TTF", 11)
+  edit:SetTextColor(1, 1, 1)
+  edit:SetAutoFocus(false)
+  -- A whisper is 255; leave room for a long character name in {char}.
+  edit:SetMaxLetters(180)
+
+  local function commit()
+    local typed = edit:GetText() or ""
+    WR.config.replyText = typed
+    -- Typing IS choosing custom. Making you click Custom first, then type,
+    -- then wonder why nothing changed, is not a setting.
+    if typed ~= "" then WR.config.replyDefault = false end
+    WR.RefreshPanel()
+  end
+
+  edit:SetScript("OnEnterPressed", function()
+    commit()
+    edit:ClearFocus()
+  end)
+  edit:SetScript("OnEditFocusLost", function() commit() end)
+  edit:SetScript("OnEscapePressed", function()
+    -- Abandon the edit: put back whatever is actually saved.
+    edit:SetText(WR.config.replyText or DEFAULT_REPLY)
+    edit:ClearFocus()
+  end)
+
+  f.edit, f.editFrame = edit, boxFrame
+
+  --[[ What the other person actually receives, {char} filled in. The token is
+       the one part of this nobody can be expected to picture. ]]
+  f.preview = f:CreateFontString(nil, "OVERLAY")
+  f.preview:SetFont("Fonts\\FRIZQT__.TTF", 10)
+  f.preview:SetWidth(PANEL_W - 24)
+  f.preview:SetPoint("TOPLEFT", f, "TOPLEFT", 12, top - 68)
+
   --[[ The one thing no slash command shows as plainly: where forwards are
        going at this moment, and therefore whether it is doing anything. ]]
   f.state = f:CreateFontString(nil, "OVERLAY")
@@ -796,6 +904,37 @@ function WR.RefreshPanel()
     local b = f.boxes[i]
     if WR.config[b.key] then b.tick:Show() else b.tick:Hide() end
   end
+
+  -- Which of the two is in use, lit rather than merely labelled.
+  local usingDefault = WR.config.replyDefault and true or false
+  for _, b in ipairs({ f.useDefault, f.useCustom }) do
+    local on = (b.wantDefault == usingDefault)
+    if on then
+      b.fill:SetVertexColor(0.22, 0.42, 0.24, 1)
+      b.label:SetTextColor(1, 1, 1)
+    else
+      b.fill:SetVertexColor(0.16, 0.16, 0.18, 1)
+      b.label:SetTextColor(0.6, 0.6, 0.6)
+    end
+  end
+
+  --[[ Never overwrite what is being typed. Refresh runs on every click in
+       this window, and replacing the text under the cursor mid-sentence is
+       the kind of thing that makes a settings window feel broken. ]]
+  if not f.edit:HasFocus() then
+    f.edit:SetText(usingDefault and DEFAULT_REPLY or (WR.config.replyText or ""))
+  end
+  if usingDefault then
+    f.edit:SetTextColor(0.6, 0.6, 0.6)
+  else
+    f.edit:SetTextColor(1, 1, 1)
+  end
+
+  local sample = WR.Target() or "your other character"
+  f.preview:SetTextColor(0.62, 0.65, 0.72)
+  f.preview:SetText("They receive: \"" ..
+    (string.gsub(usingDefault and DEFAULT_REPLY or (WR.config.replyText or ""),
+                 "{char}", sample)) .. "\"")
 
   local targets = WR.Targets()
   local n = table.getn(targets)
@@ -1100,14 +1239,20 @@ function WR.Command(input)
     if word == "off" or word == "on" then
       WR.config.autoReply = (word == "on")
       Print("auto-answer: " .. (WR.config.autoReply and "on" or "off"))
+    elseif word == "default" then
+      WR.config.replyDefault = true
+      Print("auto-answer, back to the stock wording: " ..
+        DIM .. WR.ReplyBody() .. "|r")
     elseif rest == "" then
       WR.config.autoReply = not WR.config.autoReply
       Print("auto-answer: " .. (WR.config.autoReply and "on" or "off"))
     else
       WR.config.replyText = rest
+      WR.config.replyDefault = false
       WR.config.autoReply = true
       Print("auto-answer: " .. DIM .. WR.ReplyBody() .. "|r")
     end
+    WR.RefreshPanel()
 
   elseif cmd == "every" then
     local n = tonumber((string.gsub(rest, "%s.*$", "")))
