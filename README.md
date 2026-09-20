@@ -154,6 +154,7 @@ showing as text means the chat frame is not turning links into links.
 | `/wf link` | The fallback line, when the message could not be rewritten |
 | `/wf demo` | Show a forward now, to test whether the name is clickable |
 | `/wr <message>` | Answer the last forwarded whisper AS the character they wrote to |
+| `/wf chat` | The relay window: read it all in one place and answer from there |
 | `/wp <message>` | Talk in the party or raid your other window is in |
 | `/wf group` | Forward party and raid chat to windows outside that group (default off) |
 | `/wf alerts` | Tell the other window when a battleground or dungeon pops (default on) |
@@ -177,6 +178,23 @@ colour-coded by which.
 It only goes to windows that are **not in that group** — a character standing
 in the same party already has every line in its own chat, and sending it again
 would be an echo, one per window.
+
+## The relay window
+
+    /wf chat
+
+Everything relayed — whispers, party and raid chat, queue pops — lands in a
+window of its own, and the box at the bottom sends your answer back.
+
+The line above the box says where that answer is going before you press
+Enter: back to whoever whispered you, as the character they wrote to, or into
+the group your other window is in. It follows whatever arrived last, and
+**switch** flips it when that is not the one you meant. Drag the window to
+move it, mouse wheel to scroll, and it keeps the last 60 lines while closed so
+opening it is not opening an empty box.
+
+The two commands below still work and do exactly what the window does; the
+window exists so you do not have to decide which one you wanted mid-raid.
 
 ### Talking back to that group
 

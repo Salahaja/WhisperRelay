@@ -548,10 +548,11 @@ function WR.ShowGroupChat(message, via)
   --[[ The speaker's name is clickable for the same reason a forwarded
        whisper's is: answering is the next thing you want to do, and they are
        not in a channel you can talk back to from here. ]]
-  DEFAULT_CHAT_FRAME:AddMessage(
-    (KIND_COLOUR[kind] or DIM) .. "[" .. tostring(via) .. " " ..
+  local line = (KIND_COLOUR[kind] or DIM) .. "[" .. tostring(via) .. " " ..
     (KIND_LABEL[kind] or "Group") .. "]|r " ..
-    WR.NameLink(speaker) .. " " .. said)
+    WR.NameLink(speaker) .. " " .. said
+  DEFAULT_CHAT_FRAME:AddMessage(line)
+  WR.ChatAdd(line, "group")
   return true
 end
 
@@ -702,8 +703,10 @@ function WR.InlineWhisper(evt)
   if not name then return false end
 
   WR.claimed = arg1
+  local line = WR.InlineText(name, body, arg2)
   local target = this or DEFAULT_CHAT_FRAME
-  target:AddMessage(WR.InlineText(name, body, arg2))
+  target:AddMessage(line)
+  WR.ChatAdd(line, "whisper")
   return true
 end
 
@@ -786,6 +789,228 @@ function WR.OnRelayRequest(message, sender)
   return true
 end
 
+----------------------------------------------------------------------
+-- a window to read it in, and answer from
+----------------------------------------------------------------------
+
+--[[ Everything relayed lands here as well as in the default chat, and the box
+     at the bottom sends it back.
+
+     The point is not decoration. Answering meant knowing which of two
+     commands to reach for -- /wr goes back as the character they whispered,
+     /wp talks to the group your other window is in -- and deciding that per
+     message, mid-raid, is a worse question than it looks. Here the reply goes
+     wherever the last thing came from, and the line above the box says where
+     that is before you press Enter. ]]
+local CHAT_W, CHAT_H = 420, 260
+local CHAT_BUFFER = 60
+
+WR.chatLog = {}
+
+--- Keep a little history, so opening the window is not opening an empty one.
+function WR.ChatAdd(text, context)
+  table.insert(WR.chatLog, text)
+  while table.getn(WR.chatLog) > CHAT_BUFFER do table.remove(WR.chatLog, 1) end
+
+  --[[ Where a reply would go, remembered from whatever arrived last. This is
+       the whole reason the window can have one input box instead of asking. ]]
+  if context then WR.chatContext = context end
+
+  if WR.chatFrame and WR.chatFrame:IsShown() then
+    WR.chatFrame.log:AddMessage(text)
+    WR.RefreshChatTarget()
+  end
+end
+
+--- Where the next line typed into the window will go.
+function WR.ChatDestination()
+  if WR.chatContext == "group" and WR.lastGroupFrom then
+    return "group", "the group " .. WR.lastGroupFrom .. " is in"
+  end
+  if WR.lastForward then
+    return "whisper", WR.lastForward.from .. ", as " .. WR.lastForward.via
+  end
+  if WR.lastGroupFrom then
+    return "group", "the group " .. WR.lastGroupFrom .. " is in"
+  end
+  return nil, "nothing has come through yet"
+end
+
+function WR.RefreshChatTarget()
+  local f = WR.chatFrame
+  if not f then return end
+  local kind, description = WR.ChatDestination()
+  if kind then
+    f.target:SetTextColor(0.4, 0.85, 0.47)
+    f.target:SetText("Replying to " .. description)
+  else
+    f.target:SetTextColor(0.62, 0.65, 0.72)
+    f.target:SetText(description)
+  end
+end
+
+--[[ Swap which of the two the box answers, for when both are live and the
+     last thing to arrive was not the one you want to reply to. ]]
+function WR.ToggleChatDestination()
+  if WR.chatContext == "group" then WR.chatContext = "whisper"
+  else WR.chatContext = "group" end
+  WR.RefreshChatTarget()
+end
+
+function WR.SendFromChat(text)
+  if not text or text == "" then return end
+  local kind = WR.ChatDestination()
+  if kind == "group" then
+    WR.SayInGroup(text)
+  elseif kind == "whisper" then
+    WR.ReplyThrough(text)
+  else
+    Print("nothing has been relayed here yet, so there is nowhere to answer.")
+  end
+end
+
+function WR.BuildChat()
+  if WR.chatFrame then return WR.chatFrame end
+
+  local f = CreateFrame("Frame", "WhisperRelayChat", UIParent)
+  f:SetWidth(CHAT_W)
+  f:SetHeight(CHAT_H)
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, -80)
+  f:SetFrameStrata("MEDIUM")
+  f:EnableMouse(true)
+  f:SetMovable(true)
+  f:RegisterForDrag("LeftButton")
+  f:SetScript("OnDragStart", function() f:StartMoving() end)
+  f:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+  f:Hide()
+
+  local bg = f:CreateTexture(nil, "BACKGROUND")
+  bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+  bg:SetVertexColor(0.03, 0.03, 0.04, 0.88)
+  bg:SetAllPoints(f)
+
+  local edges = {}
+  for i = 1, 4 do
+    local t = f:CreateTexture(nil, "BORDER")
+    t:SetTexture("Interface\\Buttons\\WHITE8X8")
+    t:SetVertexColor(0.56, 0.82, 1, 0.7)
+    edges[i] = t
+  end
+  edges[1]:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  edges[1]:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  edges[1]:SetHeight(1)
+  edges[2]:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  edges[2]:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  edges[2]:SetHeight(1)
+  edges[3]:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  edges[3]:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  edges[3]:SetWidth(1)
+  edges[4]:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  edges[4]:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  edges[4]:SetWidth(1)
+
+  f.title = f:CreateFontString(nil, "OVERLAY")
+  f.title:SetFont("Fonts\\FRIZQT__.TTF", 12)
+  f.title:SetTextColor(0.56, 0.82, 1)
+  f.title:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -8)
+  f.title:SetText("Relay")
+
+  local close = CreateFrame("Button", nil, f)
+  close:SetWidth(18)
+  close:SetHeight(18)
+  close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
+  close:EnableMouse(true)
+  local x = close:CreateFontString(nil, "OVERLAY")
+  x:SetFont("Fonts\\FRIZQT__.TTF", 12)
+  x:SetTextColor(0.7, 0.7, 0.7)
+  x:SetPoint("CENTER", close, "CENTER", 0, 0)
+  x:SetText("x")
+  close:SetScript("OnClick", function() f:Hide() end)
+
+  --[[ A ScrollingMessageFrame rather than a pile of FontStrings: the client
+       already knows how to hold a scrollback and trim it, and reimplementing
+       that is how you end up with a window that eats memory all night. ]]
+  local log = CreateFrame("ScrollingMessageFrame", nil, f)
+  log:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -28)
+  log:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 52)
+  log:SetFont("Fonts\\FRIZQT__.TTF", 11)
+  log:SetJustifyH("LEFT")
+  log:SetFading(false)
+  log:SetMaxLines(CHAT_BUFFER)
+  f.log = log
+
+  f:EnableMouseWheel(true)
+  f:SetScript("OnMouseWheel", function()
+    if arg1 > 0 then log:ScrollUp() else log:ScrollDown() end
+  end)
+
+  f.target = f:CreateFontString(nil, "OVERLAY")
+  f.target:SetFont("Fonts\\FRIZQT__.TTF", 10)
+  f.target:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 10, 34)
+  f.target:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -60, 34)
+  f.target:SetJustifyH("LEFT")
+
+  local swap = CreateFrame("Button", nil, f)
+  swap:SetWidth(50)
+  swap:SetHeight(14)
+  swap:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 32)
+  swap:EnableMouse(true)
+  local swapFill = swap:CreateTexture(nil, "ARTWORK")
+  swapFill:SetTexture("Interface\\Buttons\\WHITE8X8")
+  swapFill:SetVertexColor(0.16, 0.16, 0.18, 1)
+  swapFill:SetAllPoints(swap)
+  local swapText = swap:CreateFontString(nil, "OVERLAY")
+  swapText:SetFont("Fonts\\FRIZQT__.TTF", 10)
+  swapText:SetTextColor(0.8, 0.8, 0.8)
+  swapText:SetPoint("CENTER", swap, "CENTER", 0, 0)
+  swapText:SetText("switch")
+  swap:SetScript("OnClick", function() WR.ToggleChatDestination() end)
+
+  local boxFrame = CreateFrame("Frame", nil, f)
+  boxFrame:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 10, 8)
+  boxFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 8)
+  boxFrame:SetHeight(22)
+  local boxBg = boxFrame:CreateTexture(nil, "BACKGROUND")
+  boxBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+  boxBg:SetVertexColor(0.12, 0.12, 0.14, 1)
+  boxBg:SetAllPoints(boxFrame)
+
+  local edit = CreateFrame("EditBox", "WhisperRelayChatBox", boxFrame)
+  edit:SetPoint("TOPLEFT", boxFrame, "TOPLEFT", 5, -2)
+  edit:SetPoint("BOTTOMRIGHT", boxFrame, "BOTTOMRIGHT", -5, 2)
+  edit:SetFont("Fonts\\FRIZQT__.TTF", 11)
+  edit:SetTextColor(1, 1, 1)
+  edit:SetAutoFocus(false)
+  edit:SetMaxLetters(240)
+  edit:SetScript("OnEnterPressed", function()
+    local said = edit:GetText() or ""
+    edit:SetText("")
+    WR.SendFromChat(said)
+  end)
+  edit:SetScript("OnEscapePressed", function()
+    edit:SetText("")
+    edit:ClearFocus()
+  end)
+  f.edit = edit
+
+  WR.chatFrame = f
+  return f
+end
+
+function WR.ToggleChat()
+  local f = WR.BuildChat()
+  if f:IsShown() then
+    f:Hide()
+    return
+  end
+
+  -- Opening it shows what has already been said, not an empty box.
+  f.log:Clear()
+  for i = 1, table.getn(WR.chatLog) do f.log:AddMessage(WR.chatLog[i]) end
+  WR.RefreshChatTarget()
+  f:Show()
+end
+
 --- Say something in the group, through the window that is in it.
 function WR.SayInGroup(text)
   if not WR.ready then return end
@@ -861,8 +1086,10 @@ function WR.ShowHandle(name, sender)
   end
   WR.handleFor, WR.handleAt = name, time()
 
-  DEFAULT_CHAT_FRAME:AddMessage(DIM .. "    reply to |r" ..
-    WR.NameLink(name) .. DIM .. "  (forwarded by " .. tostring(sender) .. ")|r")
+  local line = DIM .. "    reply to |r" .. WR.NameLink(name) ..
+    DIM .. "  (forwarded by " .. tostring(sender) .. ")|r"
+  DEFAULT_CHAT_FRAME:AddMessage(line)
+  WR.ChatAdd(line, "whisper")
 end
 
 --[[ Decided a frame later, not here, because whether the chat hook got to
@@ -1294,8 +1521,9 @@ function WR.ShowAlert(message, sender)
   if string.sub(text, 1, string.len(ALERT)) ~= ALERT then return false end
   local body = string.gsub(string.sub(text, string.len(ALERT) + 1), "^%s+", "")
 
-  DEFAULT_CHAT_FRAME:AddMessage("|cffff8000[" .. tostring(sender) ..
-    "]  " .. body .. "|r")
+  local line = "|cffff8000[" .. tostring(sender) .. "]  " .. body .. "|r"
+  DEFAULT_CHAT_FRAME:AddMessage(line)
+  WR.ChatAdd(line)
   WR.ShowPopup(sender, body)
   if PlaySound then pcall(PlaySound, "ReadyCheck") end
   -- Worth a try when the window is not even focused; absent on some clients.
@@ -1517,6 +1745,7 @@ local function Usage()
   Print("|cffe0a22c/wf group|r -- forward party and raid chat to windows outside it")
   Print("|cffe0a22c/wr <message>|r -- answer AS the character they whispered")
   Print("|cffe0a22c/wp <message>|r -- talk in the party your other window is in")
+  Print("|cffe0a22c/wf chat|r -- a window to read it in and answer from")
   Print("|cffe0a22c/wf testpop|r -- show the popup now")
 end
 
@@ -1654,6 +1883,9 @@ function WR.Command(input)
     WR.config.groupChat = not WR.config.groupChat
     Print("forwarding party and raid chat: " ..
       (WR.config.groupChat and "on" or "off"))
+
+  elseif cmd == "chat" or cmd == "window" then
+    WR.ToggleChat()
 
   elseif cmd == "alerts" then
     WR.config.alerts = not WR.config.alerts

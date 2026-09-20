@@ -142,6 +142,21 @@ local function newClient(name)
     function f:SetFrameStrata() end
     function f:CreateTexture() return region() end
     function f:CreateFontString() return region() end
+    -- ScrollingMessageFrame: the client keeps the scrollback, so the window
+    -- does not reimplement one.
+    f.lines = {}
+    function f:AddMessage(m) table.insert(self.lines, tostring(m)) end
+    function f:Clear() self.lines = {} end
+    function f:SetMaxLines() end
+    function f:SetFading() end
+    function f:ScrollUp() end
+    function f:ScrollDown() end
+    function f:SetMovable() end
+    function f:RegisterForDrag() end
+    function f:StartMoving() end
+    function f:StopMovingOrSizing() end
+    function f:EnableMouseWheel() end
+    function f:SetFrameLevel() end
     -- EditBox. Focus is modelled because the panel deliberately refuses to
     -- overwrite text while it is being typed.
     f.focused = false
@@ -2584,6 +2599,208 @@ step("no marker can turn the next letter into a token", function()
       error("an outgoing request contains a percent sign: " .. m.text)
     end
   end
+end)
+
+----------------------------------------------------------------------
+-- the relay window
+----------------------------------------------------------------------
+
+local function chatWindow(c) return c.byName["WhisperRelayChat"] end
+local function chatBox(c) return c.byName["WhisperRelayChatBox"] end
+
+local function windowLines(c)
+  local w = chatWindow(c)
+  return (w and w.log and w.log.lines) or {}
+end
+
+step("/wf chat opens a window with what has already arrived", function()
+  local b = newClient("Salabeard")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:cmd("chat")
+
+  local w = chatWindow(b)
+  if not w then error("no window was built") end
+  if not w:IsShown() then error("built but not shown") end
+
+  local found = false
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "you around?", 1, true) then found = true end
+  end
+  if not found then error("opened empty: " .. table.concat(windowLines(b), " | ")) end
+end)
+
+step("things arriving afterwards appear in it", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: still there?")
+
+  local found = false
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "still there?", 1, true) then found = true end
+  end
+  if not found then error("the window did not update") end
+end)
+
+step("group chat and queue pops land in it too", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">#P~Bobby~pull in 10")
+  b:deliver("Salahaja", ">! Warsong Gulch is ready to join")
+
+  local sawGroup, sawAlert = false, false
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "pull in 10", 1, true) then sawGroup = true end
+    if string.find(l, "Warsong Gulch", 1, true) then sawAlert = true end
+  end
+  if not sawGroup then error("group chat did not reach the window") end
+  if not sawAlert then error("the alert did not reach the window") end
+end)
+
+--[[ The reason the window exists: answering meant choosing between /wr and
+     /wp per message. Here it goes wherever the last thing came from. ]]
+step("typing answers a whisper as the character they wrote to", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:cmd("chat")
+
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("five minutes")
+  e.scripts.OnEnterPressed()
+  b:drain()
+
+  local asks = relayAsks(b, "Salahaja")
+  if table.getn(asks) ~= 1 then
+    error("sent " .. table.getn(asks) .. " requests, expected 1")
+  end
+  if not string.find(asks[1], "five minutes", 1, true) then
+    error("sent: " .. asks[1])
+  end
+  if e:GetText() ~= "" then error("the box kept the text after sending") end
+end)
+
+step("and answers the group when that is what last arrived", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  b:cmd("chat")
+  b:deliver("Alpha", ">#P~Bobby~who is tanking?")
+
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("I'll tank")
+  e.scripts.OnEnterPressed()
+  b:drain()
+
+  if table.getn(sayAsks(b, "Alpha")) ~= 1 then
+    error("did not answer into the group")
+  end
+end)
+
+step("the window says where the reply will go before you send it", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  b:cmd("chat")
+  b:deliver("Alpha", ">#P~Bobby~who is tanking?")
+
+  local said = chatWindow(b).target:GetText()
+  if not string.find(said, "group", 1, true) then
+    error("it says: " .. said)
+  end
+end)
+
+--[[ Both can be live at once, and the last thing to arrive is not always the
+     one you meant to answer. ]]
+step("switch flips between the group and the whisper", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:deliver("Salahaja", ">#P~Charlie~pull in 10")
+
+  local before = chatWindow(b).target:GetText()
+  if not string.find(before, "group", 1, true) then
+    error("expected the group first: " .. before)
+  end
+
+  b.WR.ToggleChatDestination()
+  local after = chatWindow(b).target:GetText()
+  if not string.find(after, "Bobby", 1, true) then
+    error("switching did not move to the whisper: " .. after)
+  end
+
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("on my way")
+  e.scripts.OnEnterPressed()
+  b:drain()
+  if table.getn(relayAsks(b, "Salahaja")) ~= 1 then
+    error("sent to the group after switching to the whisper")
+  end
+end)
+
+step("with nothing relayed it says so rather than guessing", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  local said = chatWindow(b).target:GetText()
+  if not string.find(said, "nothing", 1, true) then
+    error("it says: " .. said)
+  end
+
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("hello?")
+  e.scripts.OnEnterPressed()
+  b:drain()
+  if table.getn(b.sent) > 0 then error("sent it somewhere anyway") end
+end)
+
+step("an empty line sends nothing", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:cmd("chat")
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("")
+  e.scripts.OnEnterPressed()
+  b:drain()
+  if table.getn(b.sent) > 0 then error("sent an empty line") end
+end)
+
+step("/wf chat closes it again", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:cmd("chat")
+  if chatWindow(b):IsShown() then error("did not close") end
+end)
+
+--[[ It has to remember while closed, or the first thing you do after opening
+     it is scroll back through chat looking for what you missed. ]]
+step("it keeps a history while closed, and does not grow forever", function()
+  local b = newClient("Salabeard")
+  for i = 1, 120 do
+    b:deliver("Salahaja", ">> Bobby: message " .. i)
+  end
+  if table.getn(b.WR.chatLog) > 60 then
+    error("kept " .. table.getn(b.WR.chatLog) .. " lines")
+  end
+  b:cmd("chat")
+  local lines = windowLines(b)
+  if table.getn(lines) == 0 then error("opened empty after all that") end
+end)
+
+step("the window is not the event frame or the popup", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  if chatWindow(b) == b.frame then error("it replaced the event frame") end
+  b:deliver("Salahaja", ">> Bobby: still here?")
+  local ok = false
+  for _, m in ipairs(b.chat) do
+    if string.find(m, "still here?", 1, true) then ok = true end
+  end
+  if not ok then error("the addon stopped handling whispers") end
 end)
 
 print(string.format("\n%d passed, %d failed  \n", pass, fail))
