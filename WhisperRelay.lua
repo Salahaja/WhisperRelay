@@ -74,7 +74,16 @@ local RELAY = ">@"
      better than this one does.
 
      Same rule as RELAY: honoured only from one of our own windows. ]]
-local SAY = ">%"
+--[[ NOT "%" as the second character, whatever else changes here.
+
+     WoW expands substitution tokens in outgoing chat, and %t is the one for
+     your current target. A marker of ">%" turns "/wp tanything" into the
+     whisper ">%tanything", the client reads the "%t", finds nothing selected
+     and refuses the whole message with "no target" -- so every sentence
+     beginning with t failed and nothing else did.
+
+     None of the other markers contain a %, and none of them should. ]]
+local SAY = ">+"
 
 --[[ Party chat is not one message an hour like a whisper -- a busy run is a
      line every few seconds, and every forwarded line is a whisper of its own.

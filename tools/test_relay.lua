@@ -2359,7 +2359,7 @@ end)
 local function sayAsks(c, target)
   local out = {}
   for _, m in ipairs(toTarget(c, target)) do
-    if string.sub(m.text, 1, 2) == ">%" then table.insert(out, m.text) end
+    if string.sub(m.text, 1, 2) == ">+" then table.insert(out, m.text) end
   end
   return out
 end
@@ -2434,7 +2434,7 @@ step("a request from a stranger is refused", function()
   local b = newClient("Bravo")
   a.party = { "Bobby" }
 
-  a:deliver("Stranger", ">%something I never said")
+  a:deliver("Stranger", ">+something I never said")
   a:drain()
   if table.getn(channelLines(a, "PARTY")) > 0 then
     error("said it anyway: " .. channelLines(a, "PARTY")[1])
@@ -2452,7 +2452,7 @@ step("a window that left the group says so rather than shouting into nothing", f
   a.party = {}                        -- no longer grouped
   a.chat = {}
 
-  a:deliver("Bravo", ">%are we going?")
+  a:deliver("Bravo", ">+are we going?")
   a:drain()
   if table.getn(a.sent) > 0 then
     error("sent something while in no group at all")
@@ -2493,11 +2493,95 @@ step("a say request is never forwarded onward", function()
   local b = newClient("Bravo")
   local c = newClient("Mahislap")
   b.party = { "Someone" }
-  b:deliver("Stranger", ">%text")
+  b:deliver("Stranger", ">+text")
   b:drain()
   for _, m in ipairs(b.sent) do
     if m.target == "Alpha" or m.target == "Mahislap" then
       error("relayed a say request: " .. m.text)
+    end
+  end
+end)
+
+----------------------------------------------------------------------
+-- nothing we send may look like a chat substitution token
+----------------------------------------------------------------------
+
+--[[ Reported from the game: "/wp tanything" failed with "no target", and only
+     sentences starting with t failed.
+
+     The marker was ">%", so the whisper carrying the request began ">%t..." --
+     and %t is WoW's token for your current target. The client expanded it,
+     found nothing selected, and refused the message. Every other letter was
+     fine, which is exactly what makes this the kind of bug you stare at. ]]
+step("a relayed line beginning with t is not read as a target token", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby" }
+  a:fire("CHAT_MSG_PARTY", "who is tanking?", "Bobby")
+  a:drain()
+  for _, m in ipairs(toTarget(a, "Bravo")) do b:deliver("Alpha", m.text) end
+
+  b.sent = {}
+  b:toParty("tanything")
+  b:drain()
+
+  local asks = sayAsks(b, "Alpha")
+  if table.getn(asks) ~= 1 then error("nothing was sent at all") end
+  if string.find(asks[1], "%%t") then
+    error("the wire text contains a %t token: " .. asks[1])
+  end
+
+  for _, m in ipairs(asks) do a:deliver("Bravo", m) end
+  a:drain()
+  local said = channelLines(a, "PARTY")
+  if table.getn(said) ~= 1 or said[1] ~= "tanything" then
+    error("the party heard: " .. (said[1] or "nothing"))
+  end
+end)
+
+step("the same for a whisper answered through another window", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b.sent = {}
+  b:reply("ten minutes")
+  b:drain()
+
+  local asks = relayAsks(b, "Salahaja")
+  if table.getn(asks) ~= 1 then error("nothing was sent") end
+  if string.find(asks[1], "%%t") then
+    error("the wire text contains a %t token: " .. asks[1])
+  end
+end)
+
+--[[ A guard rather than a test of behaviour: every marker is two characters
+     that go out at the front of a whisper, so any of them ending in % would
+     make the next letter a substitution token. ]]
+step("no marker can turn the next letter into a token", function()
+  local client = newClient("Alpha")
+  local seen = {}
+  for _, probe in ipairs({ ">> Bobby: t", ">! t", ">#P~Bobby~t" }) do
+    table.insert(seen, probe)
+  end
+  for _, text in ipairs(seen) do
+    if string.find(text, "%%") then
+      error("a marker contains a percent sign: " .. text)
+    end
+  end
+
+  -- And the two that carry a request, built the way the addon builds them.
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a.WR.lastGroupFrom = "Bravo"
+  a.WR.lastForward = { from = "Bobby", via = "Bravo" }
+  a.sent = {}
+  a:toParty("t")
+  a:reply("t")
+  a:drain()
+  for _, m in ipairs(a.sent) do
+    if string.find(m.text, "%%") then
+      error("an outgoing request contains a percent sign: " .. m.text)
     end
   end
 end)
