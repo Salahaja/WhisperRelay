@@ -190,6 +190,10 @@ local function newClient(name)
     env.SlashCmdList["WHISPERRELAY"](text)
   end
 
+  function c:reply(text)
+    env.SlashCmdList["WHISPERRELAYREPLY"](text)
+  end
+
   function c:whisper(from, text)
     self:fire("CHAT_MSG_WHISPER", text, from)
   end
@@ -2194,6 +2198,147 @@ step("a line containing a separator survives", function()
     if string.find(m, "use the ~ key, then run", 1, true) then ok = true end
   end
   if not ok then error("mangled: " .. table.concat(b.chat, " | ")) end
+end)
+
+----------------------------------------------------------------------
+-- answering as the character they actually wrote to
+----------------------------------------------------------------------
+
+local function relayAsks(c, target)
+  local out = {}
+  for _, m in ipairs(toTarget(c, target)) do
+    if string.sub(m.text, 1, 2) == ">@" then table.insert(out, m.text) end
+  end
+  return out
+end
+
+--[[ Clicking the name answers from whoever you are sitting on, which is a
+     different character from the one they wrote to. This is the other half. ]]
+step("/wr answers through the window the whisper arrived on", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:reply("yes, five minutes")
+  b:drain()
+
+  local asks = relayAsks(b, "Salahaja")
+  if table.getn(asks) ~= 1 then
+    error("sent " .. table.getn(asks) .. " requests, expected 1")
+  end
+  if not string.find(asks[1], "Bobby", 1, true) then
+    error("the request does not name who to answer: " .. asks[1])
+  end
+
+  -- ...and the window it lands on says it, to Bobby, as itself.
+  for _, m in ipairs(asks) do a:deliver("Salabeard", m) end
+  a:drain()
+  local said = toTarget(a, "Bobby")
+  if table.getn(said) ~= 1 then
+    error("Salahaja said " .. table.getn(said) .. " things to Bobby")
+  end
+  if said[1].text ~= "yes, five minutes" then
+    error("Bobby received: " .. said[1].text)
+  end
+end)
+
+--[[ The one that matters. Without the check this is a remote mouth: anyone
+     who worked out the marker could have you whisper anything to anyone. ]]
+step("a request from a stranger is refused", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+
+  a:deliver("Stranger", ">@Victim~something I never said")
+  a:drain()
+  if table.getn(toTarget(a, "Victim")) > 0 then
+    error("said it anyway: " .. toTarget(a, "Victim")[1].text)
+  end
+  local told = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "not one of your windows", 1, true) then told = true end
+  end
+  if not told then error("ignored it silently") end
+end)
+
+step("a request from one of your own windows is honoured", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:deliver("Salabeard", ">@Bobby~on my way")
+  a:drain()
+  if table.getn(toTarget(a, "Bobby")) ~= 1 then
+    error("refused a request from its own window")
+  end
+end)
+
+step("with nothing forwarded yet it says so", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a.chat = {}
+  a:reply("hello?")
+  a:drain()
+  if table.getn(a.sent) > 0 then error("sent something with no context") end
+  local told = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "no forwarded whisper", 1, true) then told = true end
+  end
+  if not told then error("said nothing about why") end
+end)
+
+step("an empty message is refused", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:deliver("Salabeard", ">> Bobby: you around?")
+  a.sent = {}
+  a:reply("")
+  a:drain()
+  if table.getn(a.sent) > 0 then error("whispered an empty line") end
+end)
+
+--[[ A whisper that arrived here directly does not need a round trip; going
+     through the relay would ask another window to say what this one can. ]]
+step("answering a whisper that came here directly goes straight out", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:deliver("Salabeard", ">> Bobby: you around?")
+  a.sent = {}
+  -- Pretend it arrived on this character rather than via another window.
+  a.WR.lastForward = { from = "Bobby", via = "Salahaja" }
+  a:reply("right here")
+  a:drain()
+
+  local said = toTarget(a, "Bobby")
+  if table.getn(said) ~= 1 then error("did not answer directly") end
+  if said[1].text ~= "right here" then error("said: " .. said[1].text) end
+  if table.getn(relayAsks(a, "Salabeard")) > 0 then
+    error("asked another window to say what this one could")
+  end
+end)
+
+step("a relay request is never forwarded onward", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  local c = newClient("Mahislap")
+  b:deliver("Stranger", ">@Someone~text")
+  b:drain()
+  for _, m in ipairs(b.sent) do
+    if m.target == "Salahaja" or m.target == "Mahislap" then
+      error("relayed a relay request: " .. m.text)
+    end
+  end
+end)
+
+step("a message containing a separator survives the round trip", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:reply("use the ~ key, then run")
+  b:drain()
+  for _, m in ipairs(relayAsks(b, "Salahaja")) do a:deliver("Salabeard", m) end
+  a:drain()
+  local said = toTarget(a, "Bobby")
+  if table.getn(said) ~= 1 or said[1].text ~= "use the ~ key, then run" then
+    error("Bobby received: " .. (said[1] and said[1].text or "nothing"))
+  end
 end)
 
 print(string.format("\n%d passed, %d failed  \n", pass, fail))

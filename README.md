@@ -93,6 +93,21 @@ clickable:
 Left-click the name and the whisper box opens to Bobby, from the character you
 are on.
 
+### Answering as the character they wrote to
+
+That reply comes from whoever you are sitting on, so Bobby gets an answer from
+Salabeard rather than the Salahaja he wrote to. When that matters:
+
+    /wr yes, five minutes
+
+The window the whisper arrived on says it, so from Bobby's side it is simply a
+conversation with the character he started one with. Clicking the name is
+still there — which you want depends on whether they know your alts.
+
+A request like that is only ever honoured **from one of your own windows**.
+From anyone else it would be a remote mouth: a way to have you whisper
+arbitrary text to arbitrary people, in your name.
+
 The link is built by the addon on the receiving side, not carried in the
 forward, because 1.12 strips link escapes out of anything `SendChatMessage`
 sends — a `|Hplayer|` link put into the whisper would arrive as mangled text.
@@ -138,6 +153,7 @@ showing as text means the chat frame is not turning links into links.
 | `/wf inline` | Clickable name inside the message (default) or on a line underneath |
 | `/wf link` | The fallback line, when the message could not be rewritten |
 | `/wf demo` | Show a forward now, to test whether the name is clickable |
+| `/wr <message>` | Answer the last forwarded whisper AS the character they wrote to |
 | `/wf group` | Forward party and raid chat to windows outside that group (default off) |
 | `/wf alerts` | Tell the other window when a battleground or dungeon pops (default on) |
 | `/wf popup` | Show an arriving pop on screen, not only in chat (default on) |

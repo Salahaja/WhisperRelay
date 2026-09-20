@@ -48,6 +48,19 @@ local ALERT = ">!"
      a room you are not standing in. ]]
 local GROUP = ">#"
 
+--[[ "Say this for me."
+
+     Clicking a forwarded name answers from the window you are sitting in, so
+     the person who wrote to Salahaja gets a reply from Salabeard -- a
+     different character, and usually a confusing one. This marker asks the
+     window they actually wrote to to say it instead, so the conversation
+     stays where they started it.
+
+     Only ever honoured from one of our own windows. A line like this from a
+     stranger would be an instruction to whisper arbitrary text to an
+     arbitrary person, in your name. ]]
+local RELAY = ">@"
+
 --[[ Party chat is not one message an hour like a whisper -- a busy run is a
      line every few seconds, and every forwarded line is a whisper of its own.
      Left ungoverned that is a flood, and the client's own protection answers
@@ -389,7 +402,9 @@ function WR.IsLoop(sender, message, targets)
 
   -- Already relayed once: someone else's relay, or ours coming back.
   local head = string.sub(message or "", 1, 2)
-  if head == MARK or head == ALERT or head == GROUP then return true end
+  if head == MARK or head == ALERT or head == GROUP or head == RELAY then
+    return true
+  end
   return false
 end
 
@@ -671,6 +686,74 @@ function WR.InstallChatHook()
     return original(evt)
   end
   WR.hooked = true
+end
+
+----------------------------------------------------------------------
+-- answering as the character they actually wrote to
+----------------------------------------------------------------------
+
+--[[ Ask the window that received a whisper to answer it.
+
+     The reply goes out from the character the person wrote to, so from their
+     side it is simply a conversation. Clicking the name is still there and
+     still answers as whoever you are sitting on -- the two are different
+     things, and which you want depends on whether they know your alts. ]]
+function WR.ReplyThrough(text)
+  if not WR.ready then return end
+  if not text or text == "" then
+    Print("nothing to say. " .. DIM .. "/wr <message>|r")
+    return
+  end
+
+  local last = WR.lastForward
+  if not last then
+    Print("no forwarded whisper to answer yet.")
+    return
+  end
+
+  if last.via == WR.me then
+    -- It arrived here in the first place; no need to go round the houses.
+    SendChatMessage(text, "WHISPER", nil, last.from)
+    return
+  end
+
+  WR.Queue(RELAY .. last.from .. "~" .. string.gsub(text, "%s+", " "), last.via)
+  DEFAULT_CHAT_FRAME:AddMessage("|cffff80ff[" .. last.via .. "] to " ..
+    last.from .. ":|r " .. text)
+end
+
+--[[ Someone asked us to say something. Honoured only from our own windows.
+
+     Without that check this is a remote mouth: anyone who worked out the
+     marker could have you whisper anything to anyone, under your name, and
+     the first you would know is the reply. ]]
+function WR.OnRelayRequest(message, sender)
+  local text = message or ""
+  if string.sub(text, 1, string.len(RELAY)) ~= RELAY then return false end
+
+  local body = string.sub(text, string.len(RELAY) + 1)
+  local sep = string.find(body, "~", 1, true)
+  if not sep then return true end
+  local target = string.sub(body, 1, sep - 1)
+  local said = string.sub(body, sep + 1)
+
+  local mine = false
+  for _, name in ipairs(WR.Targets()) do
+    if name == sender then mine = true end
+  end
+  if not mine then
+    Print(WARN .. sender .. " asked this character to whisper somebody|r, and " ..
+      "is not one of your windows. Ignored.")
+    return true
+  end
+
+  if target == "" or said == "" then return true end
+  SendChatMessage(said, "WHISPER", nil, target)
+  if WR.config.announce then
+    DEFAULT_CHAT_FRAME:AddMessage(DIM .. "said to " .. target ..
+      " for " .. sender .. ": " .. said .. "|r")
+  end
+  return true
 end
 
 --- The fallback: a short clickable line under a forward we could not rewrite.
@@ -1132,12 +1215,16 @@ function WR.OnWhisper(message, sender)
   -- window being told, not the one doing the telling.
   if WR.ShowAlert(message, sender) then return end
   if WR.ShowGroupChat(message, sender) then return end
+  if WR.OnRelayRequest(message, sender) then return end
 
   --[[ Before anything else, and before the target check: the character you
        are PLAYING is usually the one with no target of its own, and it is the
        one that needs the clickable name. ]]
   local fwd = WR.ParseForward(message)
   if fwd then
+    --[[ Remembered so /wr can answer through the window it arrived on,
+         rather than from whichever character happens to be in front of you. ]]
+    WR.lastForward = { from = fwd, via = sender }
     WR.pending = { name = fwd, sender = sender, message = message }
     return
   end
@@ -1332,6 +1419,7 @@ local function Usage()
   Print("|cffe0a22c/wf demo|r -- show what a forward looks like, to test clicking")
   Print("|cffe0a22c/wf alerts|r, |cffe0a22c/wf popup|r -- battleground and dungeon pops")
   Print("|cffe0a22c/wf group|r -- forward party and raid chat to windows outside it")
+  Print("|cffe0a22c/wr <message>|r -- answer AS the character they whispered")
   Print("|cffe0a22c/wf testpop|r -- show the popup now")
 end
 
@@ -1605,4 +1693,6 @@ end)
 
 SLASH_WHISPERRELAY1 = "/wf"
 SLASH_WHISPERRELAY2 = "/whisperforward"
+SLASH_WHISPERRELAYREPLY1 = "/wr"
+SlashCmdList["WHISPERRELAYREPLY"] = function(msg) WR.ReplyThrough(msg) end
 SlashCmdList["WHISPERRELAY"] = function(msg) WR.Command(msg) end
