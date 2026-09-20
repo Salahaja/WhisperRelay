@@ -548,11 +548,12 @@ function WR.ShowGroupChat(message, via)
   --[[ The speaker's name is clickable for the same reason a forwarded
        whisper's is: answering is the next thing you want to do, and they are
        not in a channel you can talk back to from here. ]]
-  local line = (KIND_COLOUR[kind] or DIM) .. "[" .. tostring(via) .. " " ..
+  DEFAULT_CHAT_FRAME:AddMessage(
+    (KIND_COLOUR[kind] or DIM) .. "[" .. tostring(via) .. " " ..
     (KIND_LABEL[kind] or "Group") .. "]|r " ..
-    WR.NameLink(speaker) .. " " .. said
-  DEFAULT_CHAT_FRAME:AddMessage(line)
-  WR.ChatAdd(line, "group")
+    WR.NameLink(speaker) .. " " .. said)
+  WR.ChatAdd(WR.WindowLine(via, KIND_LABEL[kind] or "Group", speaker, said),
+    "group")
   return true
 end
 
@@ -703,10 +704,9 @@ function WR.InlineWhisper(evt)
   if not name then return false end
 
   WR.claimed = arg1
-  local line = WR.InlineText(name, body, arg2)
   local target = this or DEFAULT_CHAT_FRAME
-  target:AddMessage(line)
-  WR.ChatAdd(line, "whisper")
+  target:AddMessage(WR.InlineText(name, body, arg2))
+  WR.ChatAdd(WR.WindowLine(arg2, "whisper", name, body), "whisper")
   return true
 end
 
@@ -753,6 +753,8 @@ function WR.ReplyThrough(text)
   WR.Queue(RELAY .. last.from .. "~" .. string.gsub(text, "%s+", " "), last.via)
   DEFAULT_CHAT_FRAME:AddMessage("|cffff80ff[" .. last.via .. "] to " ..
     last.from .. ":|r " .. text)
+  -- Shown as the character that will actually say it, not as whoever typed it.
+  WR.ChatAdd(WR.WindowLine(last.via, "sent", last.from, text))
 end
 
 --[[ Someone asked us to say something. Honoured only from our own windows.
@@ -806,6 +808,32 @@ local CHAT_W, CHAT_H = 420, 260
 local CHAT_BUFFER = 60
 
 WR.chatLog = {}
+
+--[[ One shape for every line in the window, and the character it arrived on
+     always first.
+
+     In the normal chat frame a forward reads like a whisper with "(via
+     Salahaja)" trailing off the end, which is fine when one thing arrives at
+     a time and useless when four windows are talking: the one fact you need
+     first is WHICH of your characters this reached, and it was last and dim.
+
+     So: who it reached, then what kind of thing it was, then who said it. The
+     character is in one colour and nothing else uses it. ]]
+local WHO_COLOUR = "|cff8fd0ff"
+
+function WR.WindowLine(onChar, kind, who, said)
+  local head = WHO_COLOUR .. tostring(onChar) .. "|r "
+  if kind == "whisper" then
+    return head .. DIM .. "from|r " .. WR.NameLink(who) .. ": " .. said
+  elseif kind == "sent" then
+    return head .. DIM .. "to " .. tostring(who) .. ":|r " .. said
+  elseif kind == "alert" then
+    return head .. "|cffff8000! " .. said .. "|r"
+  end
+  -- Party, Raid, Raid Warning: the kind IS the label.
+  return head .. DIM .. tostring(kind) .. "|r " ..
+    WR.NameLink(who) .. ": " .. said
+end
 
 --- Keep a little history, so opening the window is not opening an empty one.
 function WR.ChatAdd(text, context)
@@ -1036,6 +1064,7 @@ function WR.SayInGroup(text)
   WR.Queue(SAY .. string.gsub(text, "%s+", " "), via)
   DEFAULT_CHAT_FRAME:AddMessage("|cffaaaaff[" .. via .. " Group] " ..
     tostring(WR.me) .. ":|r " .. text)
+  WR.ChatAdd(WR.WindowLine(via, "sent", "the group", text))
 end
 
 --[[ Someone asked us to say something to the group we are in.
@@ -1086,10 +1115,10 @@ function WR.ShowHandle(name, sender)
   end
   WR.handleFor, WR.handleAt = name, time()
 
-  local line = DIM .. "    reply to |r" .. WR.NameLink(name) ..
-    DIM .. "  (forwarded by " .. tostring(sender) .. ")|r"
-  DEFAULT_CHAT_FRAME:AddMessage(line)
-  WR.ChatAdd(line, "whisper")
+  DEFAULT_CHAT_FRAME:AddMessage(DIM .. "    reply to |r" .. WR.NameLink(name) ..
+    DIM .. "  (forwarded by " .. tostring(sender) .. ")|r")
+  -- The window shows the whole line; the fallback in chat is only a handle.
+  WR.ChatAdd(WR.WindowLine(sender, "whisper", name, ""), "whisper")
 end
 
 --[[ Decided a frame later, not here, because whether the chat hook got to
@@ -1521,9 +1550,9 @@ function WR.ShowAlert(message, sender)
   if string.sub(text, 1, string.len(ALERT)) ~= ALERT then return false end
   local body = string.gsub(string.sub(text, string.len(ALERT) + 1), "^%s+", "")
 
-  local line = "|cffff8000[" .. tostring(sender) .. "]  " .. body .. "|r"
-  DEFAULT_CHAT_FRAME:AddMessage(line)
-  WR.ChatAdd(line)
+  DEFAULT_CHAT_FRAME:AddMessage("|cffff8000[" .. tostring(sender) .. "]  " ..
+    body .. "|r")
+  WR.ChatAdd(WR.WindowLine(sender, "alert", nil, body))
   WR.ShowPopup(sender, body)
   if PlaySound then pcall(PlaySound, "ReadyCheck") end
   -- Worth a try when the window is not even focused; absent on some clients.

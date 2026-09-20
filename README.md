@@ -186,7 +186,19 @@ would be an echo, one per window.
 Everything relayed — whispers, party and raid chat, queue pops — lands in a
 window of its own, and the box at the bottom sends your answer back.
 
-The line above the box says where that answer is going before you press
+Every line leads with **which of your characters it reached**, in one colour
+nothing else uses, so four windows talking at once stay apart at a glance:
+
+    Salahaja  from [Bobby]: you around?
+    Salahaja  Party [Charlie]: pull in 10
+    Salahaja  ! Warsong Gulch is ready to join
+    Salahaja  to Bobby: five minutes
+
+The last of those is something you sent — shown as the character that actually
+said it, not as whoever typed it, that being the whole point of sending it
+through. Sender names stay clickable.
+
+The line above the box says where your answer is going before you press
 Enter: back to whoever whispered you, as the character they wrote to, or into
 the group your other window is in. It follows whatever arrived last, and
 **switch** flips it when that is not the one you meant. Drag the window to

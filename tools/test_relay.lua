@@ -2803,5 +2803,131 @@ step("the window is not the event frame or the popup", function()
   if not ok then error("the addon stopped handling whispers") end
 end)
 
+----------------------------------------------------------------------
+-- every line says which character it reached
+----------------------------------------------------------------------
+
+--[[ With four windows talking, the first fact you need is WHICH of your
+     characters a line arrived on. In the normal chat frame that is trailing
+     off the end of a whisper as "(via Salahaja)"; in the window it leads. ]]
+step("a whisper line leads with the character it arrived on", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+
+  local line
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "you around?", 1, true) then line = l end
+  end
+  if not line then error("nothing in the window") end
+
+  local whereChar = string.find(line, "Salahaja", 1, true)
+  local whereFrom = string.find(line, "Bobby", 1, true)
+  if not whereChar then error("the line never names the character: " .. line) end
+  if whereChar > whereFrom then
+    error("the character comes after the sender: " .. line)
+  end
+  if not string.find(line, "|Hplayer:Bobby|h", 1, true) then
+    error("the sender is not clickable: " .. line)
+  end
+end)
+
+step("a group line does the same, and says which channel", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">#R~Charlie~healers up")
+
+  local line
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "healers up", 1, true) then line = l end
+  end
+  if not line then error("nothing in the window") end
+  if string.find(line, "Salahaja", 1, true) > string.find(line, "Charlie", 1, true) then
+    error("the character comes after the speaker: " .. line)
+  end
+  if not string.find(line, "Raid", 1, true) then
+    error("the line does not say which channel: " .. line)
+  end
+end)
+
+step("an alert says which window it popped on", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">! Warsong Gulch is ready to join")
+
+  local line
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "Warsong", 1, true) then line = l end
+  end
+  if not line or not string.find(line, "Salahaja", 1, true) then
+    error("the alert does not name the window: " .. tostring(line))
+  end
+end)
+
+--[[ What you send is shown as the character that will actually say it, not as
+     whoever typed it -- that being the entire point of sending it through. ]]
+step("your own reply is shown as the character saying it", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+
+  local e = chatBox(b)
+  e:SetText("five minutes")
+  e.scripts.OnEnterPressed()
+
+  local line
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "five minutes", 1, true) then line = l end
+  end
+  if not line then error("what you sent is not in the window") end
+  if not string.find(line, "Salahaja", 1, true) then
+    error("it does not say who will say it: " .. line)
+  end
+  if string.find(line, "Salabeard", 1, true) then
+    error("it names the character that typed it instead: " .. line)
+  end
+end)
+
+step("talking to the group shows as that window talking", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  b:cmd("chat")
+  b:deliver("Alpha", ">#P~Bobby~who is tanking?")
+
+  local e = chatBox(b)
+  e:SetText("I'll tank")
+  e.scripts.OnEnterPressed()
+
+  local line
+  for _, l in ipairs(windowLines(b)) do
+    if string.find(l, "I'll tank", 1, true) then line = l end
+  end
+  if not line then error("what you sent is not in the window") end
+  if not string.find(line, "Alpha", 1, true) then
+    error("it does not name the window that will say it: " .. line)
+  end
+end)
+
+step("lines from two different windows are told apart", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  c:cmd("chat")
+  c:deliver("Alpha", ">> Bobby: from the first window")
+  c:deliver("Bravo", ">> Bobby: from the second")
+
+  local sawA, sawB = false, false
+  for _, l in ipairs(windowLines(c)) do
+    if string.find(l, "from the first window", 1, true)
+       and string.find(l, "Alpha", 1, true) then sawA = true end
+    if string.find(l, "from the second", 1, true)
+       and string.find(l, "Bravo", 1, true) then sawB = true end
+  end
+  if not (sawA and sawB) then
+    error("could not tell them apart: " .. table.concat(windowLines(c), " | "))
+  end
+end)
+
 print(string.format("\n%d passed, %d failed  \n", pass, fail))
 if fail > 0 then os.exit(1) end
