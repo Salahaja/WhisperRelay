@@ -754,7 +754,9 @@ function WR.ReplyThrough(text)
   DEFAULT_CHAT_FRAME:AddMessage("|cffff80ff[" .. last.via .. "] to " ..
     last.from .. ":|r " .. text)
   -- Shown as the character that will actually say it, not as whoever typed it.
-  WR.ChatAdd(WR.WindowLine(last.via, "sent", last.from, text))
+  -- Tagged with where it went, so your reply sits beside the whisper it
+  -- answers rather than only on All.
+  WR.ChatAdd(WR.WindowLine(last.via, "sent", last.from, text), "whisper")
 end
 
 --[[ Someone asked us to say something. Honoured only from our own windows.
@@ -836,22 +838,70 @@ function WR.WindowLine(onChar, kind, who, said)
 end
 
 --- Keep a little history, so opening the window is not opening an empty one.
-function WR.ChatAdd(text, context)
-  table.insert(WR.chatLog, text)
+--[[ Tabs by KIND rather than by conversation.
+
+     Whispers scrolling party chat away is the actual complaint: they arrive
+     at different rates about different things, and the one you are watching
+     is rarely the one filling the window. Splitting them fixes that with
+     three fixed tabs. A tab per person would multiply without limit in a
+     raid, and the thing being separated here is not who is talking. ]]
+WR.TABS = {
+  { key = "all",     label = "All" },
+  { key = "whisper", label = "Whispers" },
+  { key = "group",   label = "Party" },
+}
+
+--- Does this line belong on that tab? Alerts live on All alone.
+local function onTab(entry, tab)
+  if tab == "all" then return true end
+  return entry.kind == tab
+end
+
+function WR.ChatAdd(text, kind)
+  local entry = { text = text, kind = kind }
+  table.insert(WR.chatLog, entry)
   while table.getn(WR.chatLog) > CHAT_BUFFER do table.remove(WR.chatLog, 1) end
 
   --[[ Where a reply would go, remembered from whatever arrived last. This is
-       the whole reason the window can have one input box instead of asking. ]]
-  if context then WR.chatContext = context end
+       what lets one input box work instead of asking every time. ]]
+  if kind == "whisper" or kind == "group" then WR.chatContext = kind end
 
-  if WR.chatFrame and WR.chatFrame:IsShown() then
-    WR.chatFrame.log:AddMessage(text)
+  local f = WR.chatFrame
+  if f and f:IsShown() then
+    if onTab(entry, WR.chatTab or "all") then
+      f.log:AddMessage(text)
+    elseif kind then
+      -- Arrived somewhere you are not looking; the tab says so.
+      WR.chatUnread = WR.chatUnread or {}
+      WR.chatUnread[kind] = true
+    end
+    WR.RefreshChatTabs()
     WR.RefreshChatTarget()
   end
 end
 
---- Where the next line typed into the window will go.
+--[[ Where the next line typed goes.
+
+     The tab decides when you are on one, which is the point of having them:
+     on Whispers, Enter answers the whisper. On All it follows whatever
+     arrived last, and switch overrides that. ]]
 function WR.ChatDestination()
+  local tab = WR.chatTab or "all"
+
+  if tab == "whisper" then
+    if WR.lastForward then
+      return "whisper", WR.lastForward.from .. ", as " .. WR.lastForward.via
+    end
+    return nil, "no whisper has been forwarded here yet"
+  end
+
+  if tab == "group" then
+    if WR.lastGroupFrom then
+      return "group", "the group " .. WR.lastGroupFrom .. " is in"
+    end
+    return nil, "no group chat has been forwarded here yet"
+  end
+
   if WR.chatContext == "group" and WR.lastGroupFrom then
     return "group", "the group " .. WR.lastGroupFrom .. " is in"
   end
@@ -875,14 +925,55 @@ function WR.RefreshChatTarget()
     f.target:SetTextColor(0.62, 0.65, 0.72)
     f.target:SetText(description)
   end
+  -- Switching by hand only means anything where the tab is not deciding.
+  if f.swap then
+    if (WR.chatTab or "all") == "all" then f.swap:Show() else f.swap:Hide() end
+  end
 end
 
---[[ Swap which of the two the box answers, for when both are live and the
-     last thing to arrive was not the one you want to reply to. ]]
 function WR.ToggleChatDestination()
   if WR.chatContext == "group" then WR.chatContext = "whisper"
   else WR.chatContext = "group" end
   WR.RefreshChatTarget()
+end
+
+--- Repaint the log for whichever tab is showing.
+function WR.ShowChatTab(key)
+  WR.chatTab = key
+  WR.chatUnread = WR.chatUnread or {}
+  WR.chatUnread[key] = nil
+
+  local f = WR.chatFrame
+  if not f then return end
+  f.log:Clear()
+  for i = 1, table.getn(WR.chatLog) do
+    local entry = WR.chatLog[i]
+    if onTab(entry, key) then f.log:AddMessage(entry.text) end
+  end
+  WR.RefreshChatTabs()
+  WR.RefreshChatTarget()
+end
+
+function WR.RefreshChatTabs()
+  local f = WR.chatFrame
+  if not f or not f.tabs then return end
+  local active = WR.chatTab or "all"
+  WR.chatUnread = WR.chatUnread or {}
+
+  for i = 1, table.getn(f.tabs) do
+    local t = f.tabs[i]
+    if t.key == active then
+      t.fill:SetVertexColor(0.16, 0.26, 0.34, 1)
+      t.label:SetTextColor(0.56, 0.82, 1)
+    elseif WR.chatUnread[t.key] then
+      -- Something arrived on a tab you are not watching.
+      t.fill:SetVertexColor(0.1, 0.1, 0.12, 1)
+      t.label:SetTextColor(1, 0.75, 0.3)
+    else
+      t.fill:SetVertexColor(0.1, 0.1, 0.12, 1)
+      t.label:SetTextColor(0.55, 0.55, 0.58)
+    end
+  end
 end
 
 function WR.SendFromChat(text)
@@ -897,16 +988,28 @@ function WR.SendFromChat(text)
   end
 end
 
+--[[ Remembered across sessions, because a window you have to drag and resize
+     every login is one you stop opening. ]]
+function WR.SaveChatGeometry()
+  local f = WR.chatFrame
+  if not f then return end
+  WR.config.chatW = f:GetWidth()
+  WR.config.chatH = f:GetHeight()
+end
+
 function WR.BuildChat()
   if WR.chatFrame then return WR.chatFrame end
 
   local f = CreateFrame("Frame", "WhisperRelayChat", UIParent)
-  f:SetWidth(CHAT_W)
-  f:SetHeight(CHAT_H)
+  f:SetWidth(WR.config.chatW or CHAT_W)
+  f:SetHeight(WR.config.chatH or CHAT_H)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, -80)
   f:SetFrameStrata("MEDIUM")
   f:EnableMouse(true)
   f:SetMovable(true)
+  f:SetResizable(true)
+  -- Below this the tab strip and the input box stop fitting.
+  f:SetMinResize(280, 160)
   f:RegisterForDrag("LeftButton")
   f:SetScript("OnDragStart", function() f:StartMoving() end)
   f:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
@@ -937,16 +1040,10 @@ function WR.BuildChat()
   edges[4]:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
   edges[4]:SetWidth(1)
 
-  f.title = f:CreateFontString(nil, "OVERLAY")
-  f.title:SetFont("Fonts\\FRIZQT__.TTF", 12)
-  f.title:SetTextColor(0.56, 0.82, 1)
-  f.title:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -8)
-  f.title:SetText("Relay")
-
   local close = CreateFrame("Button", nil, f)
   close:SetWidth(18)
   close:SetHeight(18)
-  close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
+  close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
   close:EnableMouse(true)
   local x = close:CreateFontString(nil, "OVERLAY")
   x:SetFont("Fonts\\FRIZQT__.TTF", 12)
@@ -955,9 +1052,44 @@ function WR.BuildChat()
   x:SetText("x")
   close:SetScript("OnClick", function() f:Hide() end)
 
-  --[[ A ScrollingMessageFrame rather than a pile of FontStrings: the client
-       already knows how to hold a scrollback and trim it, and reimplementing
-       that is how you end up with a window that eats memory all night. ]]
+  ------------------------------------------------------------------
+  -- tabs
+  ------------------------------------------------------------------
+  f.tabs = {}
+  local tabX = 6
+  for i = 1, table.getn(WR.TABS) do
+    local def = WR.TABS[i]
+    local width = 4 + string.len(def.label) * 7
+
+    local t = CreateFrame("Button", nil, f)
+    t:SetWidth(width)
+    t:SetHeight(18)
+    t:SetPoint("TOPLEFT", f, "TOPLEFT", tabX, -5)
+    t:EnableMouse(true)
+
+    t.fill = t:CreateTexture(nil, "ARTWORK")
+    t.fill:SetTexture("Interface\\Buttons\\WHITE8X8")
+    t.fill:SetAllPoints(t)
+
+    t.label = t:CreateFontString(nil, "OVERLAY")
+    t.label:SetFont("Fonts\\FRIZQT__.TTF", 10)
+    t.label:SetPoint("CENTER", t, "CENTER", 0, 0)
+    t.label:SetText(def.label)
+
+    t.key = def.key
+    --[[ The key is read off the button rather than captured from the loop:
+         in 5.0 the loop variable is one slot for the whole loop and holds nil
+         once it ends, so a closure over `def` would break on the first
+         click. ]]
+    t:SetScript("OnClick", function()
+      local btn = this or t
+      WR.ShowChatTab(btn.key)
+    end)
+
+    f.tabs[i] = t
+    tabX = tabX + width + 3
+  end
+
   local log = CreateFrame("ScrollingMessageFrame", nil, f)
   log:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -28)
   log:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 52)
@@ -993,10 +1125,11 @@ function WR.BuildChat()
   swapText:SetPoint("CENTER", swap, "CENTER", 0, 0)
   swapText:SetText("switch")
   swap:SetScript("OnClick", function() WR.ToggleChatDestination() end)
+  f.swap = swap
 
   local boxFrame = CreateFrame("Frame", nil, f)
   boxFrame:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 10, 8)
-  boxFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 8)
+  boxFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -22, 8)
   boxFrame:SetHeight(22)
   local boxBg = boxFrame:CreateTexture(nil, "BACKGROUND")
   boxBg:SetTexture("Interface\\Buttons\\WHITE8X8")
@@ -1021,6 +1154,27 @@ function WR.BuildChat()
   end)
   f.edit = edit
 
+  --[[ The grip. Everything inside is anchored to the frame's edges rather
+       than sized in pixels, so dragging this reflows the lot without a
+       single layout calculation of our own. ]]
+  local grip = CreateFrame("Button", nil, f)
+  grip:SetWidth(14)
+  grip:SetHeight(14)
+  grip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -2, 2)
+  grip:EnableMouse(true)
+  local gripArt = grip:CreateFontString(nil, "OVERLAY")
+  gripArt:SetFont("Fonts\\FRIZQT__.TTF", 12)
+  gripArt:SetTextColor(0.5, 0.5, 0.55)
+  gripArt:SetPoint("CENTER", grip, "CENTER", 0, 0)
+  gripArt:SetText("//")
+  grip:RegisterForDrag("LeftButton")
+  grip:SetScript("OnDragStart", function() f:StartSizing("BOTTOMRIGHT") end)
+  grip:SetScript("OnDragStop", function()
+    f:StopMovingOrSizing()
+    WR.SaveChatGeometry()
+  end)
+  f.grip = grip
+
   WR.chatFrame = f
   return f
 end
@@ -1032,11 +1186,9 @@ function WR.ToggleChat()
     return
   end
 
-  -- Opening it shows what has already been said, not an empty box.
-  f.log:Clear()
-  for i = 1, table.getn(WR.chatLog) do f.log:AddMessage(WR.chatLog[i]) end
-  WR.RefreshChatTarget()
   f:Show()
+  -- Opening it shows what has already been said, not an empty box.
+  WR.ShowChatTab(WR.chatTab or "all")
 end
 
 --- Say something in the group, through the window that is in it.
@@ -1064,7 +1216,7 @@ function WR.SayInGroup(text)
   WR.Queue(SAY .. string.gsub(text, "%s+", " "), via)
   DEFAULT_CHAT_FRAME:AddMessage("|cffaaaaff[" .. via .. " Group] " ..
     tostring(WR.me) .. ":|r " .. text)
-  WR.ChatAdd(WR.WindowLine(via, "sent", "the group", text))
+  WR.ChatAdd(WR.WindowLine(via, "sent", "the group", text), "group")
 end
 
 --[[ Someone asked us to say something to the group we are in.

@@ -198,12 +198,21 @@ The last of those is something you sent — shown as the character that actually
 said it, not as whoever typed it, that being the whole point of sending it
 through. Sender names stay clickable.
 
-The line above the box says where your answer is going before you press
-Enter: back to whoever whispered you, as the character they wrote to, or into
-the group your other window is in. It follows whatever arrived last, and
-**switch** flips it when that is not the one you meant. Drag the window to
-move it, mouse wheel to scroll, and it keeps the last 60 lines while closed so
-opening it is not opening an empty box.
+Three tabs: **All**, **Whispers**, **Party**. Whispers and party chat arrive at
+different rates about different things, and the one you are watching is rarely
+the one filling the window — so they get their own. A tab you are not on turns
+amber when something lands on it.
+
+**The tab decides where Enter goes.** On Whispers you are answering the
+whisper; on Party you are talking to the group. On All it follows whatever
+arrived last, and **switch** overrides that. The line above the box says which,
+before you press Enter, and says so plainly when a tab has nothing to answer.
+Your own replies land on the tab they answer, beside what they answer.
+
+Drag the title area to move it, the grip at the bottom-right to resize it, and
+the mouse wheel to scroll. The size is remembered between sessions, and the
+last 60 lines are kept while it is closed so opening it is not opening an
+empty box.
 
 The two commands below still work and do exactly what the window does; the
 window exists so you do not have to decide which one you wanted mid-raid.

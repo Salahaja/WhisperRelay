@@ -117,8 +117,10 @@ local function newClient(name)
     function r:GetText() return self.text end
     function r:SetPoint() end
     function r:SetAllPoints() end
-    function r:SetWidth() end
-    function r:SetHeight() end
+    function r:SetWidth(v) self.w = v end
+    function r:SetHeight(v) self.h = v end
+    function r:GetWidth() return self.w or 0 end
+    function r:GetHeight() return self.h or 0 end
     function r:SetTexture() end
     function r:SetVertexColor() end
     function r:SetFont() end
@@ -152,6 +154,10 @@ local function newClient(name)
     function f:ScrollUp() end
     function f:ScrollDown() end
     function f:SetMovable() end
+    function f:SetResizable() end
+    function f:SetMinResize() end
+    function f:SetMaxResize() end
+    function f:StartSizing() end
     function f:RegisterForDrag() end
     function f:StartMoving() end
     function f:StopMovingOrSizing() end
@@ -199,6 +205,14 @@ local function newClient(name)
   -- Drain the outgoing queue the way the game would, a frame at a time.
   function c:drain()
     for _ = 1, 40 do self:tick(1) end
+  end
+
+  --[[ Click a widget the way the client does: `this` is the frame being
+       clicked, which handlers read to find out which button they are. ]]
+  function c:click(frame)
+    env.this = frame
+    if frame.scripts and frame.scripts.OnClick then frame.scripts.OnClick() end
+    env.this = nil
   end
 
   function c:cmd(text)
@@ -2926,6 +2940,199 @@ step("lines from two different windows are told apart", function()
   end
   if not (sawA and sawB) then
     error("could not tell them apart: " .. table.concat(windowLines(c), " | "))
+  end
+end)
+
+----------------------------------------------------------------------
+-- tabs, and resizing
+----------------------------------------------------------------------
+
+local function tabFor(c, key)
+  local w = chatWindow(c)
+  for _, t in ipairs((w and w.tabs) or {}) do
+    if t.key == key then return t end
+  end
+  return nil
+end
+
+local function lineWith(c, text)
+  for _, l in ipairs(windowLines(c)) do
+    if string.find(l, text, 1, true) then return l end
+  end
+  return nil
+end
+
+--[[ The actual complaint: whispers and party chat arrive at different rates
+     about different things, and the one you are watching is rarely the one
+     filling the window. ]]
+step("the Whispers tab shows whispers and not party chat", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:deliver("Salahaja", ">#P~Charlie~pull in 10")
+
+  b:click(tabFor(b, "whisper"))
+  if not lineWith(b, "you around?") then error("the whisper is missing") end
+  if lineWith(b, "pull in 10") then error("party chat leaked into Whispers") end
+end)
+
+step("the Party tab shows party chat and not whispers", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:deliver("Salahaja", ">#P~Charlie~pull in 10")
+
+  b:click(tabFor(b, "group"))
+  if not lineWith(b, "pull in 10") then error("the party line is missing") end
+  if lineWith(b, "you around?") then error("a whisper leaked into Party") end
+end)
+
+step("All still shows everything, alerts included", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:deliver("Salahaja", ">#P~Charlie~pull in 10")
+  b:deliver("Salahaja", ">! Warsong Gulch is ready to join")
+
+  b:click(tabFor(b, "all"))
+  if not lineWith(b, "you around?") then error("no whisper on All") end
+  if not lineWith(b, "pull in 10") then error("no party line on All") end
+  if not lineWith(b, "Warsong") then error("no alert on All") end
+end)
+
+--[[ The tab decides where Enter goes. That is most of the point of having
+     them: on Whispers you are answering the whisper, full stop. ]]
+step("the tab decides where a reply goes", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+  b:deliver("Salahaja", ">#P~Charlie~pull in 10")
+
+  -- Party arrived last, so All would answer the group. The tab overrides it.
+  b:click(tabFor(b, "whisper"))
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("five minutes")
+  e.scripts.OnEnterPressed()
+  b:drain()
+  if table.getn(relayAsks(b, "Salahaja")) ~= 1 then
+    error("answered the group while on the Whispers tab")
+  end
+
+  b:click(tabFor(b, "group"))
+  b.sent = {}
+  e:SetText("on my way")
+  e.scripts.OnEnterPressed()
+  b:drain()
+  if table.getn(sayAsks(b, "Salahaja")) ~= 1 then
+    error("answered the whisper while on the Party tab")
+  end
+end)
+
+step("your own reply lands on the tab it answers", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+
+  b:click(tabFor(b, "whisper"))
+  local e = chatBox(b)
+  e:SetText("five minutes")
+  e.scripts.OnEnterPressed()
+  if not lineWith(b, "five minutes") then
+    error("what you sent is not beside the whisper it answers")
+  end
+end)
+
+step("a tab with nothing in it says so rather than guessing", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+
+  b:click(tabFor(b, "group"))
+  local said = chatWindow(b).target:GetText()
+  if not string.find(said, "no group chat", 1, true) then
+    error("it says: " .. said)
+  end
+
+  b.sent = {}
+  local e = chatBox(b)
+  e:SetText("hello?")
+  e.scripts.OnEnterPressed()
+  b:drain()
+  if table.getn(b.sent) > 0 then
+    error("answered the whisper from the empty Party tab")
+  end
+end)
+
+--[[ Something arriving on a tab you are not watching is the case tabs create
+     and have to answer for. ]]
+step("a tab you are not on says something arrived", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:click(tabFor(b, "whisper"))
+  b:deliver("Salahaja", ">#P~Charlie~pull in 10")
+
+  if not (b.WR.chatUnread and b.WR.chatUnread["group"]) then
+    error("nothing marked the Party tab")
+  end
+  b:click(tabFor(b, "group"))
+  if b.WR.chatUnread["group"] then
+    error("the mark survived looking at the tab")
+  end
+end)
+
+step("switch is only offered where the tab is not deciding", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: you around?")
+
+  b:click(tabFor(b, "all"))
+  if not chatWindow(b).swap:IsShown() then
+    error("switch is hidden on All, where it is the only way to choose")
+  end
+  b:click(tabFor(b, "whisper"))
+  if chatWindow(b).swap:IsShown() then
+    error("switch is offered on a tab that already decides")
+  end
+end)
+
+step("the window can be resized, and remembers it", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  local w = chatWindow(b)
+  if not w.grip then error("no resize grip") end
+
+  w:SetWidth(600)
+  w:SetHeight(400)
+  w.grip.scripts.OnDragStop()
+  if b.WR.config.chatW ~= 600 or b.WR.config.chatH ~= 400 then
+    error("the size was not remembered: " ..
+      tostring(b.WR.config.chatW) .. "x" .. tostring(b.WR.config.chatH))
+  end
+
+  -- A later session builds it at the size you left it.
+  b.WR.chatFrame = nil
+  local rebuilt = b.WR.BuildChat()
+  if rebuilt:GetWidth() ~= 600 then
+    error("rebuilt at " .. tostring(rebuilt:GetWidth()) .. " wide")
+  end
+end)
+
+step("every tab renders without erroring", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  b:deliver("Salahaja", ">> Bobby: one")
+  b:deliver("Salahaja", ">#R~Charlie~two")
+  b:deliver("Salahaja", ">! three")
+  for _ = 1, 2 do
+    for _, key in ipairs({ "all", "whisper", "group" }) do
+      b:click(tabFor(b, key))
+    end
   end
 end)
 
