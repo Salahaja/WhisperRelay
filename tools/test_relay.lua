@@ -194,6 +194,13 @@ local function newClient(name)
     env.SlashCmdList["WHISPERRELAYREPLY"](text)
   end
 
+  --[[ Named apart from c.party, which is the roster: defining a method of
+       the same name silently replaced the list of who is grouped with this
+       character, and the failure surfaced three functions away. ]]
+  function c:toParty(text)
+    env.SlashCmdList["WHISPERRELAYPARTY"](text)
+  end
+
   function c:whisper(from, text)
     self:fire("CHAT_MSG_WHISPER", text, from)
   end
@@ -219,7 +226,11 @@ local function step(label, fn)
   -- Every test starts with an empty shared folder, or one test teaches the
   -- next one that a character it never heard of is logged in.
   resetFiles()
-  local ok, err = pcall(fn)
+  -- xpcall rather than pcall so a crash reports where it happened instead of
+  -- just what it said.
+  local ok, err = xpcall(fn, function(e)
+    return tostring(e) .. "\n" .. debug.traceback("", 2)
+  end)
   if ok then
     pass = pass + 1
     print(string.format("  ok    %s", label))
@@ -2338,6 +2349,156 @@ step("a message containing a separator survives the round trip", function()
   local said = toTarget(a, "Bobby")
   if table.getn(said) ~= 1 or said[1].text ~= "use the ~ key, then run" then
     error("Bobby received: " .. (said[1] and said[1].text or "nothing"))
+  end
+end)
+
+----------------------------------------------------------------------
+-- talking in the party your other window is in
+----------------------------------------------------------------------
+
+local function sayAsks(c, target)
+  local out = {}
+  for _, m in ipairs(toTarget(c, target)) do
+    if string.sub(m.text, 1, 2) == ">%" then table.insert(out, m.text) end
+  end
+  return out
+end
+
+local function channelLines(c, channel)
+  local out = {}
+  for _, m in ipairs(c.sent) do
+    if m.chan == channel then table.insert(out, m.text) end
+  end
+  return out
+end
+
+--[[ Char A is in a party, you are sitting on char B, and A relays the party
+     chat to B. Reading it without being able to answer is worse than not
+     hearing it: you know a decision is being made and cannot join in. ]]
+step("/wp puts your words in the party your other window is in", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby" }
+
+  -- Alpha forwards a line of party chat to Bravo...
+  a:fire("CHAT_MSG_PARTY", "who is tanking?", "Bobby")
+  a:drain()
+  local forwarded = toTarget(a, "Bravo")
+  for _, m in ipairs(forwarded) do b:deliver("Alpha", m.text) end
+
+  -- ...and Bravo answers into it.
+  b:toParty("I'll tank")
+  b:drain()
+  local asks = sayAsks(b, "Alpha")
+  if table.getn(asks) ~= 1 then
+    error("sent " .. table.getn(asks) .. " requests, expected 1")
+  end
+
+  for _, m in ipairs(asks) do a:deliver("Bravo", m) end
+  a:drain()
+  local said = channelLines(a, "PARTY")
+  if table.getn(said) ~= 1 then
+    error("Alpha said " .. table.getn(said) .. " things in party")
+  end
+  if said[1] ~= "I'll tank" then error("the party heard: " .. said[1]) end
+end)
+
+step("in a raid it goes to raid chat, not party", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.raid = { "Bobby" }
+
+  a:fire("CHAT_MSG_RAID", "positions", "Bobby")
+  a:drain()
+  for _, m in ipairs(toTarget(a, "Bravo")) do b:deliver("Alpha", m.text) end
+
+  b:toParty("moving now")
+  b:drain()
+  for _, m in ipairs(sayAsks(b, "Alpha")) do a:deliver("Bravo", m) end
+  a:drain()
+
+  if table.getn(channelLines(a, "RAID")) ~= 1 then
+    error("did not use raid chat")
+  end
+  if table.getn(channelLines(a, "PARTY")) > 0 then
+    error("used party chat while in a raid")
+  end
+end)
+
+--[[ The same rule as the whisper version, and for the same reason: without
+     it this is a way to make somebody talk in a group they are in. ]]
+step("a request from a stranger is refused", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a.party = { "Bobby" }
+
+  a:deliver("Stranger", ">%something I never said")
+  a:drain()
+  if table.getn(channelLines(a, "PARTY")) > 0 then
+    error("said it anyway: " .. channelLines(a, "PARTY")[1])
+  end
+  local told = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "not one of your windows", 1, true) then told = true end
+  end
+  if not told then error("ignored it silently") end
+end)
+
+step("a window that left the group says so rather than shouting into nothing", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a.party = {}                        -- no longer grouped
+  a.chat = {}
+
+  a:deliver("Bravo", ">%are we going?")
+  a:drain()
+  if table.getn(a.sent) > 0 then
+    error("sent something while in no group at all")
+  end
+  local told = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "not in one", 1, true) then told = true end
+  end
+  if not told then error("said nothing about why") end
+end)
+
+step("with no group chat forwarded yet it says so", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a.chat = {}
+  a:toParty("hello?")
+  a:drain()
+  if table.getn(a.sent) > 0 then error("sent something with no group in mind") end
+  local told = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "no group chat", 1, true) then told = true end
+  end
+  if not told then error("said nothing about why") end
+end)
+
+step("an empty message is refused", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a.WR.lastGroupFrom = "Bravo"
+  a.sent = {}
+  a:toParty("")
+  a:drain()
+  if table.getn(a.sent) > 0 then error("sent an empty line") end
+end)
+
+step("a say request is never forwarded onward", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Mahislap")
+  b.party = { "Someone" }
+  b:deliver("Stranger", ">%text")
+  b:drain()
+  for _, m in ipairs(b.sent) do
+    if m.target == "Alpha" or m.target == "Mahislap" then
+      error("relayed a say request: " .. m.text)
+    end
   end
 end)
 

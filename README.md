@@ -154,6 +154,7 @@ showing as text means the chat frame is not turning links into links.
 | `/wf link` | The fallback line, when the message could not be rewritten |
 | `/wf demo` | Show a forward now, to test whether the name is clickable |
 | `/wr <message>` | Answer the last forwarded whisper AS the character they wrote to |
+| `/wp <message>` | Talk in the party or raid your other window is in |
 | `/wf group` | Forward party and raid chat to windows outside that group (default off) |
 | `/wf alerts` | Tell the other window when a battleground or dungeon pops (default on) |
 | `/wf popup` | Show an arriving pop on screen, not only in chat (default on) |
@@ -176,6 +177,21 @@ colour-coded by which.
 It only goes to windows that are **not in that group** — a character standing
 in the same party already has every line in its own chat, and sending it again
 would be an echo, one per window.
+
+### Talking back to that group
+
+Reading what the group said without being able to answer is worse than not
+hearing it — you know a decision is being made and have to alt-tab to join in.
+So:
+
+    /wp I'll tank
+
+The window that IS in the group says it, so to everyone there it is simply the
+character they are grouped with talking. Raid or party is decided by that
+window, which knows which it is in.
+
+Like `/wr`, a request to speak is only ever honoured **from one of your own
+windows** — otherwise it is a way to make somebody talk in a group they are in.
 
 **Off by default, and rate-limited.** A busy run is a line every few seconds
 and every forwarded line is a whisper of its own. Past 25 a minute it pauses

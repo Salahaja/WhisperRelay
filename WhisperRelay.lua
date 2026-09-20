@@ -61,6 +61,21 @@ local GROUP = ">#"
      arbitrary person, in your name. ]]
 local RELAY = ">@"
 
+--[[ "Say this in your group."
+
+     The other half of forwarding party chat. Reading what the group said from
+     a window that is not in it leaves you able to hear and not answer, which
+     is worse than not hearing: you know a decision is being made and have to
+     alt-tab to join in.
+
+     The window that IS in the group says it, so to everyone there it is
+     simply the character they are grouped with talking. It carries no channel
+     of its own -- that window knows whether it is in a party or a raid far
+     better than this one does.
+
+     Same rule as RELAY: honoured only from one of our own windows. ]]
+local SAY = ">%"
+
 --[[ Party chat is not one message an hour like a whisper -- a busy run is a
      line every few seconds, and every forwarded line is a whisper of its own.
      Left ungoverned that is a flood, and the client's own protection answers
@@ -402,7 +417,8 @@ function WR.IsLoop(sender, message, targets)
 
   -- Already relayed once: someone else's relay, or ours coming back.
   local head = string.sub(message or "", 1, 2)
-  if head == MARK or head == ALERT or head == GROUP or head == RELAY then
+  if head == MARK or head == ALERT or head == GROUP or head == RELAY
+     or head == SAY then
     return true
   end
   return false
@@ -514,6 +530,11 @@ function WR.ShowGroupChat(message, via)
 
   local speaker = string.sub(rest, 1, sep - 1)
   local said = string.sub(rest, sep + 1)
+
+  --[[ Remembered so /wp can answer into that group. It is the window that
+       forwarded the line, not the person who said it: they are in the group,
+       we are talking to the window that can reach it. ]]
+  WR.lastGroupFrom = via
 
   --[[ The speaker's name is clickable for the same reason a forwarded
        whisper's is: answering is the next thing you want to do, and they are
@@ -752,6 +773,71 @@ function WR.OnRelayRequest(message, sender)
   if WR.config.announce then
     DEFAULT_CHAT_FRAME:AddMessage(DIM .. "said to " .. target ..
       " for " .. sender .. ": " .. said .. "|r")
+  end
+  return true
+end
+
+--- Say something in the group, through the window that is in it.
+function WR.SayInGroup(text)
+  if not WR.ready then return end
+  if not text or text == "" then
+    Print("nothing to say. " .. DIM .. "/wp <message>|r")
+    return
+  end
+
+  local via = WR.lastGroupFrom
+  if not via then
+    Print("no group chat has been forwarded here yet, so there is no group " ..
+      "to answer.")
+    return
+  end
+
+  if via == WR.me then
+    -- We are in it ourselves; no round trip needed.
+    local raid = (GetNumRaidMembers and GetNumRaidMembers()) or 0
+    SendChatMessage(text, raid > 0 and "RAID" or "PARTY")
+    return
+  end
+
+  WR.Queue(SAY .. string.gsub(text, "%s+", " "), via)
+  DEFAULT_CHAT_FRAME:AddMessage("|cffaaaaff[" .. via .. " Group] " ..
+    tostring(WR.me) .. ":|r " .. text)
+end
+
+--[[ Someone asked us to say something to the group we are in.
+
+     The channel is decided HERE rather than carried, because this window is
+     the one that knows whether it is in a raid or a party -- and it can have
+     changed between the line being read and the answer being written. ]]
+function WR.OnSayRequest(message, sender)
+  local text = message or ""
+  if string.sub(text, 1, string.len(SAY)) ~= SAY then return false end
+
+  local said = string.sub(text, string.len(SAY) + 1)
+  if said == "" then return true end
+
+  local mine = false
+  for _, name in ipairs(WR.Targets()) do
+    if name == sender then mine = true end
+  end
+  if not mine then
+    Print(WARN .. sender .. " asked this character to speak to its group|r, " ..
+      "and is not one of your windows. Ignored.")
+    return true
+  end
+
+  local raid = (GetNumRaidMembers and GetNumRaidMembers()) or 0
+  local party = (GetNumPartyMembers and GetNumPartyMembers()) or 0
+  if raid == 0 and party == 0 then
+    Print(DIM .. sender .. " asked this character to say something to its " ..
+      "group, but it is not in one any more.|r")
+    return true
+  end
+
+  SendChatMessage(said, raid > 0 and "RAID" or "PARTY")
+  if WR.config.announce then
+    DEFAULT_CHAT_FRAME:AddMessage(DIM .. "said to the group for " .. sender ..
+      ": " .. said .. "|r")
   end
   return true
 end
@@ -1216,6 +1302,7 @@ function WR.OnWhisper(message, sender)
   if WR.ShowAlert(message, sender) then return end
   if WR.ShowGroupChat(message, sender) then return end
   if WR.OnRelayRequest(message, sender) then return end
+  if WR.OnSayRequest(message, sender) then return end
 
   --[[ Before anything else, and before the target check: the character you
        are PLAYING is usually the one with no target of its own, and it is the
@@ -1420,6 +1507,7 @@ local function Usage()
   Print("|cffe0a22c/wf alerts|r, |cffe0a22c/wf popup|r -- battleground and dungeon pops")
   Print("|cffe0a22c/wf group|r -- forward party and raid chat to windows outside it")
   Print("|cffe0a22c/wr <message>|r -- answer AS the character they whispered")
+  Print("|cffe0a22c/wp <message>|r -- talk in the party your other window is in")
   Print("|cffe0a22c/wf testpop|r -- show the popup now")
 end
 
@@ -1695,4 +1783,7 @@ SLASH_WHISPERRELAY1 = "/wf"
 SLASH_WHISPERRELAY2 = "/whisperforward"
 SLASH_WHISPERRELAYREPLY1 = "/wr"
 SlashCmdList["WHISPERRELAYREPLY"] = function(msg) WR.ReplyThrough(msg) end
+
+SLASH_WHISPERRELAYPARTY1 = "/wp"
+SlashCmdList["WHISPERRELAYPARTY"] = function(msg) WR.SayInGroup(msg) end
 SlashCmdList["WHISPERRELAY"] = function(msg) WR.Command(msg) end
