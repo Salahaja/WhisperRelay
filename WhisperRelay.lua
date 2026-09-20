@@ -42,6 +42,22 @@ local MARK = ">>"
      exist. Both markers are loop guards, so neither is ever passed on. ]]
 local ALERT = ">!"
 
+--[[ Group chat gets a third marker, for the same reason alerts got a second:
+     it is a different kind of thing arriving and reads differently. A whisper
+     was addressed to you and wants an answer; a line of party chat was said to
+     a room you are not standing in. ]]
+local GROUP = ">#"
+
+--[[ Party chat is not one message an hour like a whisper -- a busy run is a
+     line every few seconds, and every forwarded line is a whisper of its own.
+     Left ungoverned that is a flood, and the client's own protection answers
+     a flood by silently dropping what you send.
+
+     So there is a ceiling. Past it the forwarding stops and says so once,
+     rather than quietly sending half of everything. ]]
+local GROUP_MAX_PER_MIN = 25
+local GROUP_MUTE_FOR = 120
+
 --[[ The stock answer. Kept as a constant so "use the default" is always the
      same thing, however many times it has been switched away from. ]]
 local DEFAULT_REPLY = "Not watching this one right now - I'm on {char}, whisper me there."
@@ -100,6 +116,10 @@ local defaults = {
   -- exactly what you miss while looking at the other window.
   popup = true,
   popupSeconds = 60,
+  --[[ Off by default. A busy group is a line every few seconds and every one
+       becomes a whisper, which is a lot of traffic to turn on for somebody
+       without asking. ]]
+  groupChat = false,
 }
 
 ----------------------------------------------------------------------
@@ -369,8 +389,125 @@ function WR.IsLoop(sender, message, targets)
 
   -- Already relayed once: someone else's relay, or ours coming back.
   local head = string.sub(message or "", 1, 2)
-  if head == MARK or head == ALERT then return true end
+  if head == MARK or head == ALERT or head == GROUP then return true end
   return false
+end
+
+----------------------------------------------------------------------
+-- group chat, to the window that is not in the group
+----------------------------------------------------------------------
+
+--[[ Who is in the party or raid with this character, by name.
+
+     The whole point is to reach the windows that are NOT here. A character
+     sitting in the same group already sees every line in its own chat, so
+     forwarding to it would be an echo of something already on screen -- and
+     with two of your characters in one group, an echo each way. ]]
+function WR.GroupMembers()
+  local here = {}
+  local raid = (GetNumRaidMembers and GetNumRaidMembers()) or 0
+
+  if raid > 0 then
+    for i = 1, raid do
+      local name = GetRaidRosterInfo and GetRaidRosterInfo(i)
+      if name then here[name] = true end
+    end
+  else
+    local party = (GetNumPartyMembers and GetNumPartyMembers()) or 0
+    for i = 1, party do
+      local name = UnitName("party" .. i)
+      if name then here[name] = true end
+    end
+  end
+
+  return here
+end
+
+--- The windows that would not otherwise hear this.
+function WR.TargetsOutsideGroup()
+  local here, out = WR.GroupMembers(), {}
+  local targets = WR.Targets()
+  for i = 1, table.getn(targets) do
+    if not here[targets[i]] then table.insert(out, targets[i]) end
+  end
+  return out
+end
+
+--[[ Has this run away with itself? Counted over a rolling minute rather than
+     per message, because the thing that trips flood protection is the rate,
+     not any one line. ]]
+function WR.GroupAllowed()
+  local now = time()
+
+  if WR.groupMutedUntil then
+    if now < WR.groupMutedUntil then return false end
+    WR.groupMutedUntil = nil
+    WR.groupCount, WR.groupWindow = 0, now
+  end
+
+  if not WR.groupWindow or (now - WR.groupWindow) >= 60 then
+    WR.groupWindow, WR.groupCount = now, 0
+  end
+
+  WR.groupCount = (WR.groupCount or 0) + 1
+  if WR.groupCount > GROUP_MAX_PER_MIN then
+    WR.groupMutedUntil = now + GROUP_MUTE_FOR
+    Print(WARN .. "that group is talking faster than this can forward|r - " ..
+      "group chat paused for " .. (GROUP_MUTE_FOR / 60) .. " minutes so the " ..
+      "client does not start dropping what you send.")
+    return false
+  end
+
+  return true
+end
+
+--- kind is one character: P party, R raid, W raid warning.
+function WR.OnGroupChat(kind, message, sender)
+  if not WR.ready or not WR.config.enabled then return end
+  if not WR.config.groupChat then return end
+  if not sender or sender == WR.me then return end
+  if not message or message == "" then return end
+
+  local targets = WR.TargetsOutsideGroup()
+  if table.getn(targets) == 0 then return end
+  if not WR.GroupAllowed() then return end
+
+  --[[ Two separators then the rest, so a line containing one survives. Only
+       the kind and the speaker's name are fielded, and a name cannot hold a
+       separator. ]]
+  local line = GROUP .. kind .. "~" .. sender .. "~" ..
+    string.gsub(message, "%s+", " ")
+
+  for i = 1, table.getn(targets) do
+    WR.Queue(string.sub(line, 1, 250), targets[i])
+  end
+end
+
+local KIND_LABEL = { P = "Party", R = "Raid", W = "Raid Warning" }
+local KIND_COLOUR = { P = "|cffaaaaff", R = "|cffff7f00", W = "|cffff4444" }
+
+--- A line of group chat arriving from a window that IS in one.
+function WR.ShowGroupChat(message, via)
+  local text = message or ""
+  if string.sub(text, 1, string.len(GROUP)) ~= GROUP then return false end
+
+  local body = string.sub(text, string.len(GROUP) + 1)
+  local kind = string.sub(body, 1, 1)
+  local rest = string.sub(body, 3)          -- skip the kind and its separator
+  local sep = string.find(rest, "~", 1, true)
+  if not sep then return true end
+
+  local speaker = string.sub(rest, 1, sep - 1)
+  local said = string.sub(rest, sep + 1)
+
+  --[[ The speaker's name is clickable for the same reason a forwarded
+       whisper's is: answering is the next thing you want to do, and they are
+       not in a channel you can talk back to from here. ]]
+  DEFAULT_CHAT_FRAME:AddMessage(
+    (KIND_COLOUR[kind] or DIM) .. "[" .. tostring(via) .. " " ..
+    (KIND_LABEL[kind] or "Group") .. "]|r " ..
+    WR.NameLink(speaker) .. " " .. said)
+  return true
 end
 
 ----------------------------------------------------------------------
@@ -690,6 +827,8 @@ local SWITCHES = {
     note = "a chat addon can take the rewrite away" },
   { key = "autoReply", label = "Answer whoever whispered me",
     note = "a bot reply in their window; off by default" },
+  { key = "groupChat", label = "Forward party and raid chat",
+    note = "only to windows that are not in that group" },
   { key = "announce",  label = "Note each forward here",
     note = "so you can see it happening" },
 }
@@ -992,6 +1131,7 @@ function WR.OnWhisper(message, sender)
   -- Before the forward checks, and before the target check: this is the
   -- window being told, not the one doing the telling.
   if WR.ShowAlert(message, sender) then return end
+  if WR.ShowGroupChat(message, sender) then return end
 
   --[[ Before anything else, and before the target check: the character you
        are PLAYING is usually the one with no target of its own, and it is the
@@ -1191,6 +1331,7 @@ local function Usage()
   Print("|cffe0a22c/wf inline|r -- clickable name in the message, or underneath")
   Print("|cffe0a22c/wf demo|r -- show what a forward looks like, to test clicking")
   Print("|cffe0a22c/wf alerts|r, |cffe0a22c/wf popup|r -- battleground and dungeon pops")
+  Print("|cffe0a22c/wf group|r -- forward party and raid chat to windows outside it")
   Print("|cffe0a22c/wf testpop|r -- show the popup now")
 end
 
@@ -1324,6 +1465,11 @@ function WR.Command(input)
   elseif cmd == "config" or cmd == "options" or cmd == "settings" then
     WR.TogglePanel()
 
+  elseif cmd == "group" then
+    WR.config.groupChat = not WR.config.groupChat
+    Print("forwarding party and raid chat: " ..
+      (WR.config.groupChat and "on" or "off"))
+
   elseif cmd == "alerts" then
     WR.config.alerts = not WR.config.alerts
     Print("telling the other window about pops: " ..
@@ -1381,6 +1527,10 @@ frame:RegisterEvent("CHAT_MSG_SYSTEM")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("UPDATE_BATTLEFIELD_STATUS")
 frame:RegisterEvent("CHAT_MSG_ADDON")
+frame:RegisterEvent("CHAT_MSG_PARTY")
+frame:RegisterEvent("CHAT_MSG_RAID")
+frame:RegisterEvent("CHAT_MSG_RAID_LEADER")
+frame:RegisterEvent("CHAT_MSG_RAID_WARNING")
 
 function WR.Init()
   if WR.ready then return end
@@ -1436,6 +1586,13 @@ frame:SetScript("OnEvent", function()
     WR.OnBattlefield()
   elseif event == "CHAT_MSG_ADDON" then
     WR.OnAddonMessage(arg1, arg2)
+
+  elseif event == "CHAT_MSG_PARTY" then
+    WR.OnGroupChat("P", arg1, arg2)
+  elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" then
+    WR.OnGroupChat("R", arg1, arg2)
+  elseif event == "CHAT_MSG_RAID_WARNING" then
+    WR.OnGroupChat("W", arg1, arg2)
   end
 end)
 

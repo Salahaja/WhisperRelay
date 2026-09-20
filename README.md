@@ -138,12 +138,33 @@ showing as text means the chat frame is not turning links into links.
 | `/wf inline` | Clickable name inside the message (default) or on a line underneath |
 | `/wf link` | The fallback line, when the message could not be rewritten |
 | `/wf demo` | Show a forward now, to test whether the name is clickable |
+| `/wf group` | Forward party and raid chat to windows outside that group (default off) |
 | `/wf alerts` | Tell the other window when a battleground or dungeon pops (default on) |
 | `/wf popup` | Show an arriving pop on screen, not only in chat (default on) |
 | `/wf testpop` | Show the popup now, without waiting for a queue |
 | `/wf echo` | Whether to note each forward in this window too |
 
 Settings are saved per account, so each account is set up once.
+
+## Party and raid chat
+
+When one character is in a group and another window is not, that window hears
+nothing. `/wf group` forwards the chat to it:
+
+    [Salahaja Party] Bobby pull in 10
+
+The speaker's name is clickable, since they are not in a channel you can
+answer from there. Party, raid, raid leader and raid warnings all come through,
+colour-coded by which.
+
+It only goes to windows that are **not in that group** — a character standing
+in the same party already has every line in its own chat, and sending it again
+would be an echo, one per window.
+
+**Off by default, and rate-limited.** A busy run is a line every few seconds
+and every forwarded line is a whisper of its own. Past 25 a minute it pauses
+for two minutes and says so, because the client answers a flood by silently
+dropping what you send.
 
 ## When something pops
 

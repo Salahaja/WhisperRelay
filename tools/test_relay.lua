@@ -77,6 +77,18 @@ local function newClient(name)
     return q.status, q.map
   end
   env.LFT_ADDON_PREFIX = "LFT"
+  -- Who this character is grouped with. The feature turns on being able to
+  -- tell "in this group" from "not in it".
+  c.party, c.raid = {}, {}
+  env.GetNumPartyMembers = function() return table.getn(c.party) end
+  env.GetNumRaidMembers = function() return table.getn(c.raid) end
+  env.GetRaidRosterInfo = function(i) return c.raid[i] end
+  env.UnitName = function(unit)
+    if unit == "player" then return name end
+    local _, _, idx = string.find(tostring(unit), "^party(%d+)$")
+    if idx then return c.party[tonumber(idx)] end
+    return nil
+  end
   env.SendChatMessage = function(text, chan, _, target)
     if type(text) ~= "string" then error("sent a non-string") end
     if string.len(text) > 255 then
@@ -211,6 +223,12 @@ local function step(label, fn)
     fail = fail + 1
     print(string.format("  FAIL  %s\n        %s", label, tostring(err)))
   end
+end
+
+--- A client says it is still here, as a running one does every minute.
+local function activate_beat(c)
+  c.WR.sinceBeat = 999
+  c:tick(1)
 end
 
 local function toTarget(c, target)
@@ -1986,5 +2004,197 @@ step("an emptied box falls back rather than whispering nothing", function()
   if got[1] == "" then error("whispered an empty message") end
 end)
 
-print(string.format("\n%d passed, %d failed\n", pass, fail))
+----------------------------------------------------------------------
+-- party and raid chat, to the window that is not in the group
+----------------------------------------------------------------------
+
+local function groupLines(c, target)
+  local out = {}
+  for _, m in ipairs(toTarget(c, target)) do
+    if string.sub(m.text, 1, 2) == ">#" then table.insert(out, m.text) end
+  end
+  return out
+end
+
+step("party chat reaches the window that is not in the party", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby", "Charlie" }
+
+  a:fire("CHAT_MSG_PARTY", "pull in 10", "Bobby")
+  a:drain()
+
+  local got = groupLines(a, "Bravo")
+  if table.getn(got) ~= 1 then
+    error("sent " .. table.getn(got) .. " lines, expected 1")
+  end
+  if not string.find(got[1], "pull in 10", 1, true) then
+    error("the line lost what was said: " .. got[1])
+  end
+  if not string.find(got[1], "Bobby", 1, true) then
+    error("the line lost who said it: " .. got[1])
+  end
+end)
+
+--[[ The check that makes this a feature rather than an echo. A character in
+     the same party already has every line in its own chat window. ]]
+step("a window already in that party is not told again", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bravo" }                 -- both characters in the one group
+
+  a:fire("CHAT_MSG_PARTY", "pull in 10", "Bobby")
+  a:drain()
+  if table.getn(groupLines(a, "Bravo")) > 0 then
+    error("echoed party chat to a character standing in the same party")
+  end
+end)
+
+step("with three windows, only the ones outside hear it", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  local c = newClient("Charlie")
+  a:cmd("group")
+  a.party = { "Bravo" }                 -- Bravo is here, Charlie is not
+
+  a:fire("CHAT_MSG_PARTY", "invis pot now", "Bobby")
+  a:drain()
+  if table.getn(groupLines(a, "Bravo")) > 0 then
+    error("told the window that is in the party")
+  end
+  if table.getn(groupLines(a, "Charlie")) ~= 1 then
+    error("did not tell the window that is outside it")
+  end
+end)
+
+step("raid chat and raid warnings come through too", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.raid = { "Bobby" }
+
+  a:fire("CHAT_MSG_RAID", "healers on the tank", "Bobby")
+  a:fire("CHAT_MSG_RAID_LEADER", "moving in", "Bobby")
+  a:fire("CHAT_MSG_RAID_WARNING", "RUN", "Bobby")
+  a:drain()
+  if table.getn(groupLines(a, "Bravo")) ~= 3 then
+    error("got " .. table.getn(groupLines(a, "Bravo")) .. " of 3")
+  end
+end)
+
+step("it is off until asked for", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a.party = { "Bobby" }
+  a:fire("CHAT_MSG_PARTY", "anyone there?", "Bobby")
+  a:drain()
+  if table.getn(groupLines(a, "Bravo")) > 0 then
+    error("forwarded group chat without being turned on")
+  end
+end)
+
+step("your own lines are not forwarded back to you", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby" }
+  a:fire("CHAT_MSG_PARTY", "on my way", "Alpha")
+  a:drain()
+  if table.getn(groupLines(a, "Bravo")) > 0 then
+    error("forwarded this character's own party line")
+  end
+end)
+
+--[[ A busy run is a line every few seconds and every one becomes a whisper.
+     Unchecked that is a flood, and the client answers a flood by silently
+     dropping what you send. ]]
+step("a talkative group is muted rather than flooded", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby" }
+
+  for i = 1, 60 do
+    a:fire("CHAT_MSG_PARTY", "line " .. i, "Bobby")
+  end
+  a:drain()
+
+  local n = table.getn(groupLines(a, "Bravo"))
+  if n > 30 then error("forwarded " .. n .. " lines without stopping") end
+  if n == 0 then error("forwarded nothing at all") end
+
+  local warned = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "paused", 1, true) then warned = true end
+  end
+  if not warned then error("went quiet without saying why") end
+end)
+
+step("and starts again once the mute expires", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby" }
+  for i = 1, 60 do a:fire("CHAT_MSG_PARTY", "line " .. i, "Bobby") end
+  a:drain()
+  a.sent = {}
+
+  clock.t = clock.t + 200
+  -- Bravo is still logged in, so it has gone on saying so; without that its
+  -- heartbeat ages out and the test proves the wrong thing.
+  activate_beat(b)
+  a.WR.others, a.WR.othersAt = nil, nil
+  a:fire("CHAT_MSG_PARTY", "still here?", "Bobby")
+  a:drain()
+  if table.getn(groupLines(a, "Bravo")) ~= 1 then
+    error("did not resume after the pause")
+  end
+  clock.t = clock.t - 200
+end)
+
+step("an arriving line is shown, with the speaker clickable", function()
+  local b = newClient("Bravo")
+  b:deliver("Alpha", ">#P~Bobby~pull in 10")
+
+  local shown = false
+  for _, m in ipairs(b.chat) do
+    if string.find(m, "pull in 10", 1, true)
+       and string.find(m, "|Hplayer:Bobby|h", 1, true)
+       and string.find(m, "Party", 1, true) then shown = true end
+  end
+  if not shown then
+    error("shown as: " .. table.concat(b.chat, " | "))
+  end
+end)
+
+--[[ From a STRANGER, not from one of our own windows: a line from Alpha is
+     already refused because Alpha is a window we forward to, which would let
+     this pass while proving nothing about the marker. ]]
+step("a line carrying the group marker is never forwarded onward", function()
+  local a = newClient("Alpha")
+  local b = newClient("Bravo")
+  b:cmd("group")
+  b.party = { "Someone" }
+  b:deliver("Stranger", ">#P~Bobby~pull in 10")
+  b:drain()
+  for _, m in ipairs(b.sent) do
+    if m.target == "Alpha" then
+      error("relayed a relayed line: " .. m.text)
+    end
+  end
+end)
+
+step("a line containing a separator survives", function()
+  local b = newClient("Bravo")
+  b:deliver("Alpha", ">#R~Bobby~use the ~ key, then run")
+  local ok = false
+  for _, m in ipairs(b.chat) do
+    if string.find(m, "use the ~ key, then run", 1, true) then ok = true end
+  end
+  if not ok then error("mangled: " .. table.concat(b.chat, " | ")) end
+end)
+
+print(string.format("\n%d passed, %d failed  \n", pass, fail))
 if fail > 0 then os.exit(1) end
