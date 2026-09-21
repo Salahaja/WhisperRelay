@@ -1911,23 +1911,51 @@ local function Status()
   if n > 0 then Print(n .. " message(s) still going out") end
 end
 
+--[[ Every command, grouped by what you would be trying to do.
+
+     Printed in full by a bare /wf, because a command list you have to already
+     know the name of is not discovery. It is long; that is the honest size of
+     the thing, and the alternative was leaving half of it undocumented, which
+     is what had happened -- the chat window and the reply commands were
+     reachable and unmentioned. ]]
 local function Usage()
-  Print("|cffe0a22c/wf auto|r -- find your other character instead of naming one")
-  Print("|cffe0a22c/wf list|r, |cffe0a22c/wf forget <character>|r -- the names it has learned")
-  Print("|cffe0a22c/wf config|r -- every switch in one window")
-  Print("|cffe0a22c/wf to <character>|r -- forward whispers to that character")
-  Print("|cffe0a22c/wf|r status  |  on  |  off  |  reply  |  echo  |  link  |  test")
-  Print("|cffe0a22c/wf reply <text>|r -- what to tell the sender ({char} = target)")
-  Print("|cffe0a22c/wf every <seconds>|r -- how often to answer one person")
-  Print("|cffe0a22c/wf link|r -- the clickable name under an arriving forward")
-  Print("|cffe0a22c/wf inline|r -- clickable name in the message, or underneath")
-  Print("|cffe0a22c/wf demo|r -- show what a forward looks like, to test clicking")
-  Print("|cffe0a22c/wf alerts|r, |cffe0a22c/wf popup|r -- battleground and dungeon pops")
-  Print("|cffe0a22c/wf group|r -- forward party and raid chat to windows outside it")
-  Print("|cffe0a22c/wr <message>|r -- answer AS the character they whispered")
-  Print("|cffe0a22c/wp <message>|r -- talk in the party your other window is in")
-  Print("|cffe0a22c/wf chat|r -- a window to read it in and answer from")
-  Print("|cffe0a22c/wf testpop|r -- show the popup now")
+  Print("commands:")
+  local function line(cmd, what)
+    DEFAULT_CHAT_FRAME:AddMessage("   |cffe0a22c" .. cmd .. "|r  " ..
+      DIM .. what .. "|r")
+  end
+
+  line("/wf chat", "the relay window: read it all here and answer from it")
+  line("/wr <message>", "answer a whisper AS the character they wrote to")
+  line("/wp <message>", "talk in the party your other window is in")
+
+  line("/wf", "this list, with the current state above it")
+  line("/wf status", "the state on its own")
+  line("/wf config", "every switch in one window")
+
+  line("/wf auto", "find your other character rather than naming one")
+  line("/wf to <char>", "forward to that character instead")
+  line("/wf list", "characters it has seen on this machine")
+  line("/wf forget <char>", "drop one, or 'all'")
+  line("/wf on", "start forwarding again")
+  line("/wf off", "stop forwarding entirely")
+
+  line("/wf reply on|off", "answer whoever whispered you (off by default)")
+  line("/wf reply <text>", "the wording. {char} becomes the live character")
+  line("/wf reply default", "back to the stock wording, keeping yours")
+  line("/wf every <secs>", "how often one person may be answered")
+
+  line("/wf group", "forward party and raid chat to windows outside it")
+  line("/wf alerts", "pass on battleground and dungeon queue pops")
+  line("/wf popup", "show an arriving pop on screen, not only in chat")
+
+  line("/wf inline", "clickable name in the message, or on a line under it")
+  line("/wf link", "that fallback line, when the message cannot be rewritten")
+  line("/wf echo", "note each forward in this window too")
+
+  line("/wf demo", "show what a forward looks like, to test clicking")
+  line("/wf testpop", "show the popup now")
+  line("/wf test", "send a test forward to the other window")
 end
 
 function WR.Command(input)
@@ -1935,7 +1963,11 @@ function WR.Command(input)
   local cmd = string.lower((string.gsub(msg, "%s.*$", "")))
   local rest = string.gsub(msg, "^%S*%s*", "")
 
-  if cmd == "" or cmd == "status" then
+  if cmd == "" then
+    Status()
+    Usage()
+
+  elseif cmd == "status" then
     Status()
 
   elseif cmd == "to" then
@@ -1983,10 +2015,17 @@ function WR.Command(input)
       WR.config.autoReply = not WR.config.autoReply
       Print("auto-answer: " .. (WR.config.autoReply and "on" or "off"))
     else
+      --[[ Sets the wording and nothing else. It used to switch the answering
+           ON as well, so trying out a message quietly started sending it to
+           people -- deciding what it WOULD say is not the same as asking for
+           it to be said. ]]
       WR.config.replyText = rest
       WR.config.replyDefault = false
-      WR.config.autoReply = true
-      Print("auto-answer: " .. DIM .. WR.ReplyBody() .. "|r")
+      Print("auto-answer wording: " .. DIM .. WR.ReplyBody() .. "|r")
+      if not WR.config.autoReply then
+        Print(DIM .. "answering is still off -- " ..
+          "|cffe0a22c/wf reply on|r" .. DIM .. " to use it.|r")
+      end
     end
     WR.RefreshPanel()
 

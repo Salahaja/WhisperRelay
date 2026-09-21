@@ -501,6 +501,7 @@ end)
 step("the custom answer keeps naming the current target", function()
   local c = newClient("Salahaja")
   c:cmd("to Salabeard")
+  c:cmd("reply on")   -- setting the wording no longer switches it on
   c:cmd("reply ping {char} instead")
   c:whisper("Bobby", "hi")
   c:drain()
@@ -3133,6 +3134,117 @@ step("every tab renders without erroring", function()
     for _, key in ipairs({ "all", "whisper", "group" }) do
       b:click(tabFor(b, key))
     end
+  end
+end)
+
+----------------------------------------------------------------------
+-- setting the wording is not asking for it to be said
+----------------------------------------------------------------------
+
+--[[ /wf reply <text> used to switch the answering on as a side effect, so
+     trying out a message quietly started sending it to people. Deciding what
+     it WOULD say is not the same as asking for it to be said. ]]
+step("writing the wording does not start answering people", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:cmd("reply here is my wording for {char}")
+  if a.WR.config.autoReply then
+    error("setting the wording switched answering on")
+  end
+
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  if table.getn(toTarget(a, "Bobby")) > 0 then
+    error("answered Bobby: " .. toTarget(a, "Bobby")[1].text)
+  end
+end)
+
+step("but it is kept, and used once you ask for it", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a:cmd("reply here is my wording for {char}")
+  a:cmd("reply on")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  local back = toTarget(a, "Bobby")
+  if table.getn(back) ~= 1 then error("did not answer once asked") end
+  if back[1].text ~= "here is my wording for Salabeard" then
+    error("Bobby received: " .. back[1].text)
+  end
+end)
+
+step("and it says answering is still off when it is", function()
+  local a = newClient("Salahaja")
+  a.chat = {}
+  a:cmd("reply something new")
+  local told = false
+  for _, m in ipairs(a.chat) do
+    if string.find(m, "still off", 1, true) then told = true end
+  end
+  if not told then error("changed the wording without saying it is unused") end
+end)
+
+----------------------------------------------------------------------
+-- /wf lists everything it can do
+----------------------------------------------------------------------
+
+--[[ A command list you have to already know the name of is not discovery.
+     Every command the handler accepts has to appear in it, or it is a feature
+     nobody finds -- which had already happened to the chat window. ]]
+step("a bare /wf lists every command the handler accepts", function()
+  local a = newClient("Salahaja")
+  a.chat = {}
+  a:cmd("")
+
+  local printed = table.concat(a.chat, "\n")
+  local missing = {}
+  for _, cmd in ipairs({ "chat", "config", "status", "auto", "to", "list",
+                         "forget", "on", "off", "reply", "every", "group",
+                         "alerts", "popup", "inline", "link", "echo",
+                         "demo", "testpop", "test" }) do
+    if not string.find(printed, "/wf " .. cmd, 1, true) then
+      table.insert(missing, cmd)
+    end
+  end
+  -- The two that are not /wf commands at all.
+  for _, cmd in ipairs({ "/wr ", "/wp " }) do
+    if not string.find(printed, cmd, 1, true) then
+      table.insert(missing, cmd)
+    end
+  end
+
+  if table.getn(missing) > 0 then
+    error("not listed: " .. table.concat(missing, ", "))
+  end
+end)
+
+step("and shows the current state above it", function()
+  local a = newClient("Salahaja")
+  local b = newClient("Salabeard")
+  a.chat = {}
+  a:cmd("")
+  local printed = table.concat(a.chat, "\n")
+  if not string.find(printed, "Salabeard", 1, true) then
+    error("no state shown: " .. printed)
+  end
+end)
+
+step("/wf status is the state on its own", function()
+  local a = newClient("Salahaja")
+  a.chat = {}
+  a:cmd("status")
+  local printed = table.concat(a.chat, "\n")
+  if string.find(printed, "/wf testpop", 1, true) then
+    error("/wf status printed the whole command list")
+  end
+end)
+
+step("an unknown command still gets the list", function()
+  local a = newClient("Salahaja")
+  a.chat = {}
+  a:cmd("nonsense")
+  if not string.find(table.concat(a.chat, "\n"), "/wf chat", 1, true) then
+    error("said nothing useful about an unknown command")
   end
 end)
 

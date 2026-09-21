@@ -1,54 +1,85 @@
 # Whisper Relay
 
-Multi-boxing on WoW 1.12: a whisper landing on one of your windows is
+Multi-boxing on WoW 1.12. A whisper landing on one of your windows is
 forwarded — as a whisper — to **every other one running on this machine**.
 Four accounts means three windows you are not looking at, and whichever one
-you happen to be in front of has the message, with the sender's name
-clickable so you can answer from there.
+you happen to be in front of has the message, with the sender's name clickable
+so you can answer from there.
 
-The forwards travel as ordinary whispers, so the relay itself works whether
-your other account is a second copy of the client, a second machine, or a
-friend covering for you. Working out *which* character to forward to
-automatically does need both clients on one machine — see *How it knows*.
+It does the same for party and raid chat, and for battleground and dungeon
+queue pops, which expire on a timer while you are looking somewhere else.
 
 ## Install
 
-Drop the `WhisperRelay` folder into `Interface\AddOns`.
+Drop the `WhisperRelay` folder into `Interface\AddOns`, then **restart the
+client** — 1.12 only scans for new addon folders at launch, so `/reload` will
+not find a folder that was not there when it started.
 
 ## Setup
 
-None. Start both clients and each one works out which character the other is
-on. Whispers to the window you are not watching arrive in the one you are:
-
-    >> Bobby: you around for Strat tonight?
-
+None. Start both clients and each works out which character the other is on.
 Switch to a different alt and it follows, with nothing typed.
 
-It can also answer Bobby to say which character you are on — but that is a bot
-reply appearing in someone else's window, so it is **off by default**. Turn it
-on in `/wf config` or with `/wf reply on`.
+Everything else is optional. **`/wf` on its own prints the whole command list,
+with the current state above it.**
 
-## Settings
+## The relay window
 
-    /wf config
+    /wf chat
 
-Every switch in one window, with what it is currently set to, and the one
-thing no command shows as plainly: which windows it is forwarding to right
-now. With nothing else logged in it says so and starts again on its own when
-another window appears.
+Everything relayed lands here — whispers, party and raid chat, queue pops —
+and the box at the bottom sends your answer back.
 
-It also holds the message sent back to whoever whispered you. **Default** is
-the stock wording; **Custom** is a box you type your own into. `{char}` is
-replaced with the character you are on, and the line underneath shows the
-finished sentence exactly as they will receive it.
+Every line leads with **which of your characters it reached**, in one colour
+nothing else uses, so several windows talking at once stay apart at a glance:
 
-The two are kept separately, so switching to Default and back does not throw
-away what you wrote. Typing in the box switches to Custom by itself. Enter or
-clicking away saves; Escape abandons the edit.
+    Salahaja  from [Bobby]: you around?
+    Salahaja  Party [Charlie]: pull in 10
+    Salahaja  ! Warsong Gulch is ready to join
+    Salahaja  to Bobby: five minutes
 
-### How it knows
+The last of those is something you sent — shown as the character that actually
+said it, not as whoever typed it, that being the whole point of sending it
+through. Sender names stay clickable.
 
-Two ways, in that order.
+### Tabs
+
+**All**, **Whispers**, **Party**. Whispers and party chat arrive at different
+rates about different things, and the one you are watching is rarely the one
+filling the window. A tab you are not on turns amber when something lands on
+it.
+
+**The tab decides where Enter goes.** On Whispers you are answering the
+whisper; on Party you are talking to the group. On All it follows whatever
+arrived last, and **switch** overrides that — switch is hidden on the tabs
+where it would only contradict them. A tab with nothing to answer says so and
+refuses rather than quietly answering the other thing. Your replies land on
+the tab they answer.
+
+Drag the window to move it, the grip at the bottom-right to resize it, the
+mouse wheel to scroll. The size is remembered, and the last 60 lines are kept
+while it is closed.
+
+## Answering the sender automatically
+
+**Off by default.** It is a bot reply appearing in someone else's window, which
+should be a decision:
+
+    /wf reply on
+    /wf reply Busy on {char} right now
+
+`{char}` becomes the character you are on. Setting the wording does **not**
+switch answering on — deciding what it would say is not the same as asking for
+it to be said, and it tells you so. `/wf reply default` goes back to the stock
+wording without discarding yours, and `/wf every <seconds>` sets how often one
+person may be answered (300 by default, so it reads as an away message rather
+than as spam).
+
+`/wf config` has the same settings in a window, including a box to type the
+wording with a preview of the finished sentence.
+## How it knows which character to forward to
+
+
 
 Both clients are the same installation, so they share `CustomData/`, and
 Nampower's file API lets Lua read and write in it. Each client leaves a line
@@ -83,48 +114,30 @@ auto-answered — telling someone to go whisper a character who is offline would
 be worse than saying nothing. `/wf` lists every character the shared file has
 heard from and how long ago, so a client that is not joining in is obvious.
 
-## Replying
+## Answering
 
-On the window you are playing, a forward is shown with the sender's name
-clickable:
-
-    [Bobby] whispers: you around for Strat tonight?  (via Salahaja)
-
-Left-click the name and the whisper box opens to Bobby, from the character you
-are on.
-
-### Answering as the character they wrote to
-
-That reply comes from whoever you are sitting on, so Bobby gets an answer from
-Salabeard rather than the Salahaja he wrote to. When that matters:
+Clicking a forwarded name opens a whisper to that person **from the character
+you are on**. When you would rather answer as the character they actually
+wrote to:
 
     /wr yes, five minutes
 
-The window the whisper arrived on says it, so from Bobby's side it is simply a
-conversation with the character he started one with. Clicking the name is
-still there — which you want depends on whether they know your alts.
+The window the whisper arrived on says it, so from their side it is simply a
+conversation with the character they started one with.
 
-A request like that is only ever honoured **from one of your own windows**.
-From anyone else it would be a remote mouth: a way to have you whisper
-arbitrary text to arbitrary people, in your name.
+For party and raid chat, the same idea:
 
-The link is built by the addon on the receiving side, not carried in the
-forward, because 1.12 strips link escapes out of anything `SendChatMessage`
-sends — a `|Hplayer|` link put into the whisper would arrive as mangled text.
-Getting it *inside* the line means suppressing the client's own display, which
-means standing in front of `ChatFrame_OnEvent`.
+    /wp I'll tank
 
-That global is one other chat addons replace too. If one of them takes it back
-after us, or bypasses it, the rewrite never runs — so nothing depends on it:
-whatever is not rewritten falls back to a clickable name on a short line
-underneath.
+The window that **is** in the group says it. Party or raid is decided by that
+window, which knows which it is in and can have changed since you read the
+line. If it has left the group, it says so rather than shouting into nothing.
 
-    >> Bobby: you around for Strat tonight?
-        reply to [Bobby]  (forwarded by Salahaja)
+Both are only ever honoured **from one of your own windows**. From anyone else,
+a request like that is a way to make you whisper arbitrary text to arbitrary
+people, or talk in a group you are in, under your own name.
 
-`/wf inline` chooses between the two deliberately; `/wf link` turns the
-fallback line off.
-
+The relay window does both without you choosing, which is why it exists.
 ### If the name is not clickable
 
     /wf demo
@@ -135,34 +148,7 @@ visible. Nothing at all means the addon is not loaded — **a newly added addon
 folder is only picked up when the client starts, not by `/reload`.** Escapes
 showing as text means the chat frame is not turning links into links.
 
-## Commands
 
-| Command | What it does |
-| --- | --- |
-| `/wf` | Status: who it found, every client it can see, what the auto-answer says |
-| `/wf auto` | Find your other character instead of naming one (default on) |
-| `/wf to <character>` | Forward to that character, and remember the name |
-| `/wf list` | Every character seen on this machine, and which are logged in |
-| `/wf forget <character>` | Drop one (or `all`) from that list |
-| `/wf on` / `/wf off` | Stop and start forwarding |
-| `/wf test` | Send a test forward, so you can check the target without waiting for a real whisper |
-| `/wf reply` / `/wf reply on|off` | Turn the auto-answer on or off |
-| `/wf reply <text>` | Set your own wording. `{char}` is replaced with the target |
-| `/wf reply default` | Back to the stock wording, keeping yours for later |
-| `/wf every <seconds>` | How often one person may be auto-answered (default 300) |
-| `/wf inline` | Clickable name inside the message (default) or on a line underneath |
-| `/wf link` | The fallback line, when the message could not be rewritten |
-| `/wf demo` | Show a forward now, to test whether the name is clickable |
-| `/wr <message>` | Answer the last forwarded whisper AS the character they wrote to |
-| `/wf chat` | The relay window: read it all in one place and answer from there |
-| `/wp <message>` | Talk in the party or raid your other window is in |
-| `/wf group` | Forward party and raid chat to windows outside that group (default off) |
-| `/wf alerts` | Tell the other window when a battleground or dungeon pops (default on) |
-| `/wf popup` | Show an arriving pop on screen, not only in chat (default on) |
-| `/wf testpop` | Show the popup now, without waiting for a queue |
-| `/wf echo` | Whether to note each forward in this window too |
-
-Settings are saved per account, so each account is set up once.
 
 ## Party and raid chat
 
@@ -178,64 +164,6 @@ colour-coded by which.
 It only goes to windows that are **not in that group** — a character standing
 in the same party already has every line in its own chat, and sending it again
 would be an echo, one per window.
-
-## The relay window
-
-    /wf chat
-
-Everything relayed — whispers, party and raid chat, queue pops — lands in a
-window of its own, and the box at the bottom sends your answer back.
-
-Every line leads with **which of your characters it reached**, in one colour
-nothing else uses, so four windows talking at once stay apart at a glance:
-
-    Salahaja  from [Bobby]: you around?
-    Salahaja  Party [Charlie]: pull in 10
-    Salahaja  ! Warsong Gulch is ready to join
-    Salahaja  to Bobby: five minutes
-
-The last of those is something you sent — shown as the character that actually
-said it, not as whoever typed it, that being the whole point of sending it
-through. Sender names stay clickable.
-
-Three tabs: **All**, **Whispers**, **Party**. Whispers and party chat arrive at
-different rates about different things, and the one you are watching is rarely
-the one filling the window — so they get their own. A tab you are not on turns
-amber when something lands on it.
-
-**The tab decides where Enter goes.** On Whispers you are answering the
-whisper; on Party you are talking to the group. On All it follows whatever
-arrived last, and **switch** overrides that. The line above the box says which,
-before you press Enter, and says so plainly when a tab has nothing to answer.
-Your own replies land on the tab they answer, beside what they answer.
-
-Drag the title area to move it, the grip at the bottom-right to resize it, and
-the mouse wheel to scroll. The size is remembered between sessions, and the
-last 60 lines are kept while it is closed so opening it is not opening an
-empty box.
-
-The two commands below still work and do exactly what the window does; the
-window exists so you do not have to decide which one you wanted mid-raid.
-
-### Talking back to that group
-
-Reading what the group said without being able to answer is worse than not
-hearing it — you know a decision is being made and have to alt-tab to join in.
-So:
-
-    /wp I'll tank
-
-The window that IS in the group says it, so to everyone there it is simply the
-character they are grouped with talking. Raid or party is decided by that
-window, which knows which it is in.
-
-Like `/wr`, a request to speak is only ever honoured **from one of your own
-windows** — otherwise it is a way to make somebody talk in a group they are in.
-
-**Off by default, and rate-limited.** A busy run is a line every few seconds
-and every forwarded line is a whisper of its own. Past 25 a minute it pauses
-for two minutes and says so, because the client answers a flood by silently
-dropping what you send.
 
 ## When something pops
 
@@ -296,8 +224,47 @@ test this properly.
   back to that character when they next say they are here.
 - **The auto-answer is a bot reply.** Five minutes per person is the default
   so that it reads as an away message rather than as spam.
+- **Nothing in a marker may contain `%`.** WoW expands `%t` in outgoing chat as
+  your current target, so a marker ending in `%` turns the next letter into a
+  substitution token -- which is exactly what made every `/wp` message
+  beginning with *t* fail with "no target" in 1.5.0. There is a test asserting
+  it of all the markers rather than of the one that bit.
+
+
+## Commands
+
+`/wf` on its own prints all of this in game, with the current state above it.
+
+| Command | What it does |
+| --- | --- |
+| `/wf chat` | The relay window: read it all here and answer from it |
+| `/wr <message>` | Answer a whisper AS the character they wrote to |
+| `/wp <message>` | Talk in the party your other window is in |
+| `/wf` | The command list, with the current state above it |
+| `/wf status` | The state on its own |
+| `/wf config` | Every switch in one window |
+| `/wf auto` | Find your other character rather than naming one |
+| `/wf to <char>` | Forward to that character instead, and remember the name |
+| `/wf list` | Characters it has seen on this machine, and who is logged in |
+| `/wf forget <char>` | Drop one, or `all` |
+| `/wf on` / `/wf off` | Forwarding, as a whole |
+| `/wf reply on\|off` | Answer whoever whispered you (off by default) |
+| `/wf reply <text>` | The wording. `{char}` becomes the live character |
+| `/wf reply default` | Back to the stock wording, keeping yours |
+| `/wf every <secs>` | How often one person may be answered |
+| `/wf group` | Forward party and raid chat to windows outside it |
+| `/wf alerts` | Pass on battleground and dungeon queue pops |
+| `/wf popup` | Show an arriving pop on screen, not only in chat |
+| `/wf inline` | Clickable name in the message, or on a line under it |
+| `/wf link` | That fallback line, when the message cannot be rewritten |
+| `/wf echo` | Note each forward in this window too |
+| `/wf demo` | Show what a forward looks like, to test clicking |
+| `/wf testpop` | Show the popup now |
+| `/wf test` | Send a test forward to the other window |
+
+Settings are saved per account, so each account is set up once.
 
 ## Development
 
-    lua tools/vanilla_lint.lua WhisperRelay.lua    # 1.12 / Lua 5.0 compatibility
-    lua tools/test_relay.lua                       # two simulated clients
+    lua tools/vanilla_lint.lua WhisperRelay.lua   # 1.12 / Lua 5.0 compatibility
+    lua tools/test_relay.lua                      # several clients, one machine
