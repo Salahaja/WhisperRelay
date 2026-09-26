@@ -2,7 +2,7 @@
 ## Title: Whisper Relay
 ## Notes: Forwards whispers to your other windows, with who they came from, without whispering between them - and can tell the sender which character you are actually on.
 ## Author: Salahaja
-## Version: 1.9.0
+## Version: 1.10.0
 ## DefaultState: enabled
 ## SavedVariables: WhisperRelayDB
 WhisperRelay.lua

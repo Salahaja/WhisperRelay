@@ -6,7 +6,7 @@ three windows you are not looking at, and whichever one you happen to be in
 front of has the message, with the sender's name clickable so you can answer
 from there.
 
-It does the same for party and raid chat, and for battleground and dungeon
+It does the same for party, raid and guild chat, and for battleground and dungeon
 queue pops, which expire on a timer while you are looking somewhere else.
 
 Your windows pass all of this to each other as addon messages, not whispers,
@@ -28,12 +28,30 @@ Switch to a different alt and it follows, with nothing typed.
 Everything else is optional. **`/wf` on its own prints the whole command list,
 with the current state above it.**
 
+## The minimap button
+
+**Left-click** opens the settings window. **Right-click** opens a menu of the
+switches you reach for mid-game — forwarding, quiet, opening the relay window,
+party chat, guild chat, queue pops and their popup — each ticked when it is on, with the
+relay window and the full settings a click away. **Drag** it round the edge of
+the minimap and it stays where you leave it. Hovering it says where whispers
+are being forwarded.
+
+`/wf minimap` hides it or brings it back, and so does **Hide this button** in
+its menu.
+
 ## The relay window
 
     /wf chat
 
 Everything relayed lands here — whispers, party and raid chat, queue pops —
 and the box at the bottom sends your answer back.
+
+**The box has the keyboard only while you type in it.** Click into it to
+type; sending, Escape, a click anywhere else — a mob, the ground, the window
+around the box — or closing the window hands the keyboard straight back to the
+game, so your keybinds never land in it as text. Anything half-typed stays in
+the box for when you click back in.
 
 Every line leads with **which of your characters it reached**, in one colour
 nothing else uses, so several windows talking at once stay apart at a glance:
@@ -55,21 +73,24 @@ the group. `/wf autoopen` turns that off.
 
 ### Tabs
 
-**All**, **Whispers**, **Party**. Whispers and party chat arrive at different
-rates about different things, and the one you are watching is rarely the one
-filling the window. A tab you are not on turns amber when something lands on
-it.
+**All**, **Whispers**, **Party**, **Guild**. Whispers and group chat arrive at
+different rates about different things, and the one you are watching is
+rarely the one filling the window. A tab you are not on turns amber when
+something lands on it.
 
 **The tab decides where Enter goes.** On Whispers you are answering the
-whisper; on Party you are talking to the group. On All it follows whatever
-arrived last, and **switch** overrides that — switch is hidden on the tabs
-where it would only contradict them. A tab with nothing to answer says so and
-refuses rather than quietly answering the other thing. Your replies land on
-the tab they answer.
+whisper; on Party you are talking to the group; on Guild, to the guild. On All
+it follows whatever arrived last, and **switch** overrides that — switch is
+hidden on the tabs where it would only contradict them. **All never talks to
+the guild**, however recently it spoke: a guild talks all day, and an answer
+meant for a whisper must not land in front of everyone in it. A tab with
+nothing to answer says so and refuses rather than quietly answering the other
+thing. Your replies land on the tab they answer.
 
 Drag the window to move it, the grip at the bottom-right to resize it, the
-mouse wheel to scroll. The size is remembered, and the last 60 lines are kept
-while it is closed.
+mouse wheel to scroll. The size is remembered, and the last 60 lines of each
+kind are kept while it is closed, so a busy guild cannot push your whispers
+out.
 
 ## Answering the sender automatically
 
@@ -221,6 +242,25 @@ It only goes to windows that are **not in that group** — a character standing
 in the same party already has every line in its own chat, and sending it again
 would be an echo, one per window.
 
+## Guild chat
+
+`/wf guild` forwards guild chat the same way — to your windows that are not in
+that guild — but only into the **relay window**, on its **Guild** tab. A guild
+talks all day; the chat frame stays for what is said to you. The window does
+not open for it; the tab turns amber instead.
+
+Answer from the Guild tab, or anywhere with:
+
+    /wg anyone for ZG?
+
+The window that **is** in the guild says it. Like `/wr` and `/wp`, that is
+only ever honoured from one of your own windows, and a window that has since
+left its guild says so instead.
+
+Off by default, like party chat. A guild that talks faster than 25 lines a
+minute pauses guild forwarding for two minutes — counted apart from the
+party's, so a busy guild never silences the group you are standing in.
+
 ## When something pops
 
 A battleground invite and a dungeon group both expire on a timer, and both
@@ -299,6 +339,7 @@ test this properly.
 | `/wf chat` | The relay window: read it all here and answer from it |
 | `/wr <message>` | Answer a whisper AS the character they wrote to |
 | `/wp <message>` | Talk in the party your other window is in |
+| `/wg <message>` | Talk in the guild your other window is in |
 | `/wf` | The command list, with the current state above it |
 | `/wf status` | The state on its own |
 | `/wf config` | Every switch in one window |
@@ -312,6 +353,7 @@ test this properly.
 | `/wf reply default` | Back to the stock wording, keeping yours |
 | `/wf every <secs>` | How often one person may be answered |
 | `/wf group` | Forward party and raid chat to windows outside it |
+| `/wf guild` | Forward guild chat to the relay window of windows outside it |
 | `/wf alerts` | Pass on battleground and dungeon queue pops |
 | `/wf popup` | Show an arriving pop on screen, not only in chat |
 | `/wf inline` | Clickable name in the message, or on a line under it |
@@ -319,6 +361,7 @@ test this properly.
 | `/wf echo` | Note each forward in this window too |
 | `/wf quiet [on\|off]` | Your windows talk in addon messages, not whispers (on) |
 | `/wf autoopen` | Open the relay window when a whisper is forwarded here (on) |
+| `/wf minimap` | Show or hide the minimap button |
 | `/wf demo` | Show what a forward looks like, to test clicking |
 | `/wf testpop` | Show the popup now |
 | `/wf test` | Send a test forward to the other window |

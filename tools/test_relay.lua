@@ -16,6 +16,7 @@ was never wired up.
 ]]
 
 math.mod = math.mod or math.fmod
+math.atan2 = math.atan2 or math.atan
 string.gfind = string.gfind or string.gmatch
 table.getn = table.getn or function(t) return #t end
 unpack = unpack or table.unpack
@@ -164,6 +165,15 @@ local function newClient(name, opts)
   -- Who this character is grouped with. The feature turns on being able to
   -- tell "in this group" from "not in it".
   c.party, c.raid = {}, {}
+  --[[ The guild: its name (nil for none), who the roster lists -- empty
+       until a test fills it, as the client's is until the server answers --
+       and how often the roster was asked for. `opts.guild` is the guild a
+       character logs in already belonging to. ]]
+  c.guildName, c.roster, c.rosterAsked = opts.guild, {}, 0
+  env.IsInGuild = function() return c.guildName ~= nil end
+  env.GetNumGuildMembers = function() return table.getn(c.roster) end
+  env.GetGuildRosterInfo = function(i) return c.roster[i] end
+  env.GuildRoster = function() c.rosterAsked = c.rosterAsked + 1 end
   env.GetNumPartyMembers = function() return table.getn(c.party) end
   env.GetNumRaidMembers = function() return table.getn(c.raid) end
   env.GetRaidRosterInfo = function(i) return c.raid[i] end
@@ -213,7 +223,9 @@ local function newClient(name, opts)
     local r = { shown = true, text = "" }
     function r:SetText(t) self.text = tostring(t or "") end
     function r:GetText() return self.text end
-    function r:SetPoint() end
+    -- The last anchor it was given, so where something was put can be read.
+    function r:SetPoint(...) self.point = { ... } end
+    function r:ClearAllPoints() self.point = nil end
     function r:SetAllPoints() end
     function r:SetWidth(v) self.w = v end
     function r:SetHeight(v) self.h = v end
@@ -225,12 +237,62 @@ local function newClient(name, opts)
     function r:SetTextColor() end
     function r:SetJustifyH() end
     function r:Show() self.shown = true end
-    function r:Hide() self.shown = false end
+    -- Hiding something that was showing runs its OnHide, as the client does.
+    function r:Hide()
+      local was = self.shown
+      self.shown = false
+      if was and self.scripts and self.scripts.OnHide then
+        env.this = self
+        self.scripts.OnHide()
+        env.this = nil
+      end
+    end
     function r:IsShown() return self.shown end
     return r
   end
 
   env.UIParent = region()
+
+  --[[ For the minimap button: the map with its centre at (100, 100), a
+       cursor a test can move, a tooltip that keeps its lines, and the
+       client's dropdown menu -- which runs the menu's own builder each time
+       it opens, as the real one does, and keeps the lines it was given. ]]
+  --[[ The game world: what a click on a mob or the ground lands on.
+       `opts.worldScript` is an OnMouseDown another addon set before this one
+       loaded -- Dewdrop sets one -- which must still run. ]]
+  env.WorldFrame = region()
+  env.WorldFrame.scripts = { OnMouseDown = opts.worldScript }
+  function env.WorldFrame:SetScript(k, fn) self.scripts[k] = fn end
+  function env.WorldFrame:GetScript(k) return self.scripts[k] end
+
+  env.Minimap = region()
+  function env.Minimap:GetCenter() return 100, 100 end
+  function env.Minimap:GetEffectiveScale() return 1 end
+  c.cursor = { 0, 0 }
+  env.GetCursorPosition = function() return c.cursor[1], c.cursor[2] end
+  c.tooltip = {}
+  env.GameTooltip = {
+    SetOwner = function() c.tooltip = {} end,
+    SetText = function(_, t) table.insert(c.tooltip, t) end,
+    AddLine = function(_, t) table.insert(c.tooltip, t) end,
+    Show = function() end,
+    Hide = function() end,
+  }
+  c.menu, c.menuOpen = {}, false
+  env.UIDropDownMenu_AddButton = function(info) table.insert(c.menu, info) end
+  env.UIDropDownMenu_Initialize = function(frame, init, mode)
+    frame.initialize, frame.displayMode = init, mode
+    c.menu = {}
+    init()
+  end
+  env.ToggleDropDownMenu = function(level, _, frame)
+    if c.menuOpen then c.menuOpen = false return end
+    env.UIDROPDOWNMENU_MENU_LEVEL = level
+    c.menu = {}
+    frame.initialize()
+    c.menuOpen = true
+  end
+  env.CloseDropDownMenus = function() c.menuOpen = false end
   env.CreateFrame = function(kind, name)
     local f = region()
     f.scripts, f.events, f.name = {}, {}, name
@@ -261,14 +323,30 @@ local function newClient(name, opts)
     function f:StopMovingOrSizing() end
     function f:EnableMouseWheel() end
     function f:SetFrameLevel() end
+    function f:SetHighlightTexture() end
+    function f:RegisterForClicks() end
     -- EditBox. Focus is modelled because the panel deliberately refuses to
     -- overwrite text while it is being typed.
     f.focused = false
     function f:SetAutoFocus() end
     function f:SetMaxLetters(n) self.maxLetters = n end
-    function f:SetFocus() self.focused = true end
-    function f:ClearFocus() self.focused = false end
-    function f:HasFocus() return self.focused end
+    --[[ As the client does it: gaining or losing the keyboard runs the box's
+         focus scripts, and only when it actually changes hands. No
+         HasFocus: not every 1.12 client has one, so nothing may rely on it. ]]
+    f.clearCalls = 0
+    function f:SetFocus()
+      if self.focused then return end
+      self.focused = true
+      local run = self.scripts.OnEditFocusGained
+      if run then env.this = self run() env.this = nil end
+    end
+    function f:ClearFocus()
+      self.clearCalls = self.clearCalls + 1
+      if not self.focused then return end
+      self.focused = false
+      local run = self.scripts.OnEditFocusLost
+      if run then env.this = self run() env.this = nil end
+    end
     function f:HighlightText() end
     function f:SetTextInsets() end
     function f:EnableKeyboard() end
@@ -317,11 +395,65 @@ local function newClient(name, opts)
 
   --[[ Click a widget the way the client does: `this` is the frame being
        clicked, which handlers read to find out which button they are. ]]
-  function c:click(frame)
+  function c:click(frame, button)
     env.this = frame
+    env.arg1 = button or "LeftButton"
     if frame.scripts and frame.scripts.OnClick then frame.scripts.OnClick() end
     env.this = nil
   end
+
+  -- Press, one frame of moving, let go: what the client runs for a drag.
+  function c:drag(frame)
+    env.this = frame
+    frame.scripts.OnDragStart()
+    env.this, env.arg1 = frame, 0.02
+    if frame.scripts.OnUpdate then frame.scripts.OnUpdate() end
+    env.this = frame
+    frame.scripts.OnDragStop()
+    env.this = nil
+  end
+
+  --- A click in the game world: on a mob, the ground, anything not a window.
+  function c:clickWorld(button)
+    env.this, env.arg1 = env.WorldFrame, button or "LeftButton"
+    env.WorldFrame.scripts.OnMouseDown()
+    env.this = nil
+  end
+
+  --- A mouse press on a frame itself, not on anything inside it.
+  function c:press(frame)
+    env.this, env.arg1 = frame, "LeftButton"
+    if frame.scripts.OnMouseDown then frame.scripts.OnMouseDown() end
+    env.this = nil
+  end
+
+  function c:hover(frame)
+    env.this = frame
+    frame.scripts.OnEnter()
+    env.this = nil
+  end
+
+  --[[ A line of the open menu, picked the way the client picks it: its
+       function gets the line's arg1, with the line as `this` -- or, as an
+       older client does it, nothing at all (`bare`). A line that does not
+       keep the menu open closes it. ]]
+  function c:pick(text, bare)
+    for _, info in ipairs(self.menu) do
+      if info.text == text then
+        env.this = { value = info.value, checked = info.checked }
+        if info.func then
+          if bare then info.func() else info.func(info.arg1, info.arg2) end
+        end
+        env.this = nil
+        if not info.keepShownOnClick then self.menuOpen = false end
+        return info
+      end
+    end
+    error("no menu line says: " .. text)
+  end
+
+  -- Clicking anywhere else, which closes a menu.
+  function c:closeMenu() self.menuOpen = false end
 
   function c:cmd(text)
     env.SlashCmdList["WHISPERRELAY"](text)
@@ -336,6 +468,10 @@ local function newClient(name, opts)
        character, and the failure surfaced three functions away. ]]
   function c:toParty(text)
     env.SlashCmdList["WHISPERRELAYPARTY"](text)
+  end
+
+  function c:toGuild(text)
+    env.SlashCmdList["WHISPERRELAYGUILD"](text)
   end
 
   function c:whisper(from, text)
@@ -2710,15 +2846,18 @@ step("no marker can turn the next letter into a token", function()
     end
   end
 
-  -- And the two that carry a request, built the way the addon builds them.
+  -- And the three that carry a request, built the way the addon builds them.
   local a = newClient("Alpha")
   local b = newClient("Bravo")
   a.WR.lastGroupFrom = "Bravo"
+  a.WR.lastGuildFrom = "Bravo"
   a.WR.lastForward = { from = "Bobby", via = "Bravo" }
   a.sent = {}
   a:toParty("t")
+  a:toGuild("t")
   a:reply("t")
   a:drain()
+  if table.getn(a.sent) ~= 3 then error("expected three requests, sent " .. table.getn(a.sent)) end
   for _, m in ipairs(a.sent) do
     if string.find(m.text, "%%") then
       error("an outgoing request contains a percent sign: " .. m.text)
@@ -3313,13 +3452,14 @@ step("a bare /wf lists every command the handler accepts", function()
   for _, cmd in ipairs({ "chat", "config", "status", "auto", "to", "list",
                          "forget", "on", "off", "reply", "every", "group",
                          "alerts", "popup", "inline", "link", "echo",
+                         "quiet", "autoopen", "minimap", "guild",
                          "demo", "testpop", "test" }) do
     if not string.find(printed, "/wf " .. cmd, 1, true) then
       table.insert(missing, cmd)
     end
   end
-  -- The two that are not /wf commands at all.
-  for _, cmd in ipairs({ "/wr ", "/wp " }) do
+  -- The three that are not /wf commands at all.
+  for _, cmd in ipairs({ "/wr ", "/wp ", "/wg " }) do
     if not string.find(printed, cmd, 1, true) then
       table.insert(missing, cmd)
     end
@@ -3816,7 +3956,7 @@ step("the relay window opens on the window a whisper is forwarded to", function(
   a:drain()
   local win = b.WR.chatFrame
   if not win or not win:IsShown() then error("the relay window did not open") end
-  if win.edit:HasFocus() then error("it took the keyboard") end
+  if win.edit.focused then error("it took the keyboard") end
   if not string.find(table.concat(win.log.lines, "\n"), "you around?", 1, true) then
     error("it opened without the whisper in it")
   end
@@ -3918,6 +4058,480 @@ step("/wf autoopen keeps the relay window shut, and the settings window has it",
   if not switch then error("no switch for it in the settings window") end
   b:click(switch)
   if not b.WR.config.openChat then error("clicking it did not turn it back on") end
+end)
+
+----------------------------------------------------------------------
+-- the minimap button
+----------------------------------------------------------------------
+
+print("\n  the minimap button\n")
+
+local function minimapButton(c) return c.byName["WhisperRelayMinimapButton"] end
+
+--- Right-click the button; the menu's lines, by what they say.
+local function openMenu(c)
+  c:click(minimapButton(c), "RightButton")
+  if not c.menuOpen then error("a right-click opened no menu") end
+  local lines = {}
+  for _, info in ipairs(c.menu) do lines[info.text] = info end
+  return lines
+end
+
+step("there is a minimap button, and a left-click opens the settings", function()
+  local a = newClient("Salahaja")
+  local b = minimapButton(a)
+  if not b or not b:IsShown() then error("no minimap button") end
+  a:click(b, "LeftButton")
+  if not (a.WR.panel and a.WR.panel:IsShown()) then error("the settings did not open") end
+  a:click(b, "LeftButton")
+  if a.WR.panel:IsShown() then error("a second left-click did not close them") end
+end)
+
+step("a right-click opens a menu of basic switches, each showing its state", function()
+  local a = newClient("Salahaja")           -- quiet off, as older saved settings have it
+  local lines = openMenu(a)
+  local want = {
+    ["Forward whispers"] = true,
+    ["Quiet: no whispers between my windows"] = false,
+    ["Open the relay window for a whisper"] = true,
+    ["Forward party and raid chat"] = false,
+    ["Forward guild chat"] = false,
+    ["Pass on queue pops"] = true,
+    ["Popup for a pop"] = true,
+  }
+  for text, on in pairs(want) do
+    local info = lines[text]
+    if not info then error("no line for: " .. text) end
+    if (info.checked and true or false) ~= on then error(text .. " shows the wrong state") end
+    if not info.keepShownOnClick then error(text .. " closes the menu when ticked") end
+  end
+  a:click(minimapButton(a), "RightButton")
+  if a.menuOpen then error("a second right-click did not close it") end
+end)
+
+step("a switch in the menu flips it, and the menu shows that next time", function()
+  local a = newClient("Salahaja")
+  openMenu(a)
+  a:pick("Open the relay window for a whisper")
+  if a.WR.config.openChat then error("still on") end
+  a:closeMenu()
+  if openMenu(a)["Open the relay window for a whisper"].checked then
+    error("the menu still shows it on")
+  end
+end)
+
+step("the menu's quiet switch tells the other window, as the settings window does", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  settle(a, b)
+  openMenu(b)
+  b:pick("Quiet: no whispers between my windows")
+  a:deliver("Bobby", "hi")
+  a:drain()
+  if whisperedTo(a, "Salabeard") ~= 1 then error("the other window was not told") end
+end)
+
+step("the menu works on a client that hands its lines' functions nothing", function()
+  local a = newClient("Salahaja")
+  openMenu(a)
+  a:pick("Pass on queue pops", true)
+  if a.WR.config.alerts then error("did not switch it off") end
+end)
+
+step("forwarding switched back on tries the target again", function()
+  local c = newClient("Salahaja")
+  c:cmd("to Salabeard")
+  notFound(c, "Salabeard")
+  if c.WR.config.enabled then error("setup: a refusal should have switched it off") end
+  openMenu(c)
+  c:pick("Forward whispers")
+  c:deliver("Bobby", "back?")
+  c:drain()
+  if #toTarget(c, "Salabeard") < 1 then error("on again, but still forwarding nowhere") end
+end)
+
+step("the menu opens the relay window and the settings, and never closes them", function()
+  local a = newClient("Salahaja")
+  openMenu(a)
+  a:pick("Open the relay window")
+  if not (a.WR.chatFrame and a.WR.chatFrame:IsShown()) then error("no relay window") end
+  if a.menuOpen then error("the menu stayed open") end
+  openMenu(a)
+  a:pick("Open the relay window")
+  if not a.WR.chatFrame:IsShown() then error("a second pick closed the relay window") end
+  openMenu(a)
+  a:pick("All settings...")
+  if not (a.WR.panel and a.WR.panel:IsShown()) then error("no settings window") end
+  openMenu(a)
+  a:pick("All settings...")
+  if not a.WR.panel:IsShown() then error("a second pick closed the settings") end
+end)
+
+step("the button drags round the minimap, and stays where it was left", function()
+  local a = newClient("Salahaja")
+  a.cursor = { 100, 200 }                    -- straight above the map's centre
+  a:drag(minimapButton(a))
+  if math.abs(a.WR.config.minimapAngle - 90) > 0.001 then
+    error("saved " .. tostring(a.WR.config.minimapAngle) .. " degrees, not 90")
+  end
+  if minimapButton(a).scripts.OnUpdate then error("still following the cursor after the drop") end
+  local a2 = newClient("Salahaja", { db = a.env.WhisperRelayDB })
+  local p = minimapButton(a2).point
+  if not p or p[2] ~= a2.env.Minimap or math.abs(p[4]) > 0.001 or math.abs(p[5] - 80) > 0.001 then
+    error("not put back at the top after a /reload")
+  end
+end)
+
+step("/wf minimap hides the button, and it stays hidden across a /reload", function()
+  local a = newClient("Salahaja")
+  a:cmd("minimap")
+  if minimapButton(a):IsShown() then error("still showing") end
+  local a2 = newClient("Salahaja", { db = a.env.WhisperRelayDB })
+  local b2 = minimapButton(a2)
+  if b2 and b2:IsShown() then error("came back on its own after a /reload") end
+  a2:cmd("minimap")
+  if not (minimapButton(a2) and minimapButton(a2):IsShown()) then error("did not come back") end
+end)
+
+step("the menu can hide the button, and says how to get it back", function()
+  local a = newClient("Salahaja")
+  a.chat = {}
+  openMenu(a)
+  a:pick("Hide this button")
+  if minimapButton(a):IsShown() then error("still showing") end
+  if not string.find(table.concat(a.chat, "\n"), "/wf minimap", 1, true) then
+    error("did not say how to get it back")
+  end
+end)
+
+step("hovering the button says what the clicks do, and where whispers go", function()
+  local a = newClient("Salahaja")
+  a:cmd("to Salabeard")
+  a:hover(minimapButton(a))
+  local tip = table.concat(a.tooltip, "\n")
+  for _, want in ipairs({ "Left-click", "Right-click", "Forwarding to Salabeard" }) do
+    if not string.find(tip, want, 1, true) then
+      error("the tooltip does not say " .. want .. ": " .. tip)
+    end
+  end
+  a:cmd("off")
+  a:hover(minimapButton(a))
+  if not string.find(table.concat(a.tooltip, "\n"), "Forwarding is off", 1, true) then
+    error("the tooltip does not say forwarding is off")
+  end
+end)
+
+----------------------------------------------------------------------
+-- guild chat
+----------------------------------------------------------------------
+
+print("\n  guild chat\n")
+
+--- One window in a guild and one not: the case this is for.
+local function guildPair()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a.guildName = "Some Guild"
+  a.roster = { "Salahaja", "Guildie" }
+  settle(a, b)
+  return a, b
+end
+
+local function openWindow(c)
+  if not (c.WR.chatFrame and c.WR.chatFrame:IsShown()) then c:cmd("chat") end
+end
+
+--- Click one of the relay window's tabs, as the player would.
+local function showTab(c, key)
+  for _, t in ipairs(c.WR.chatFrame.tabs) do
+    if t.key == key then c:click(t) return end
+  end
+  error("no " .. key .. " tab")
+end
+
+local function typeInWindow(c, text)
+  local e = chatBox(c)
+  e:SetText(text)
+  e.scripts.OnEnterPressed()
+end
+
+local function saidIn(c, channel)
+  local out = {}
+  for _, m in ipairs(c.sent) do
+    if m.chan == channel then table.insert(out, m.text) end
+  end
+  return out
+end
+
+step("guild chat is not forwarded until it is switched on", function()
+  local a = guildPair()
+  a:fire("CHAT_MSG_GUILD", "anyone for ZG?", "Guildie")
+  a:drain()
+  if #carried(a, "Salabeard") > 0 or whisperedTo(a, "Salabeard") > 0 then
+    error("forwarded with it off")
+  end
+end)
+
+step("guild chat lands on the Guild tab of a window outside the guild, not in its chat", function()
+  local a, b = guildPair()
+  a:cmd("guild")
+  b.chat = {}
+  a:fire("CHAT_MSG_GUILD", "anyone for ZG?", "Guildie")
+  a:drain()
+  if whisperedTo(a, "Salabeard") > 0 then error("whispered it") end
+  if times(b, "anyone for ZG?") > 0 then error("it went into the chat frame as well") end
+  if b.WR.chatFrame and b.WR.chatFrame:IsShown() then error("it opened the window by itself") end
+  openWindow(b)
+  showTab(b, "guild")
+  local seen = table.concat(windowLines(b), "\n")
+  if not string.find(seen, "anyone for ZG?", 1, true) then error("not on the Guild tab: " .. seen) end
+  if not string.find(seen, "Guild", 1, true) then error("not marked as guild chat") end
+  showTab(b, "group")
+  if string.find(table.concat(windowLines(b), "\n"), "anyone for ZG?", 1, true) then
+    error("it is on the Party tab too")
+  end
+end)
+
+step("the Guild tab answers the guild, through the window that is in it", function()
+  local a, b = guildPair()
+  a:cmd("guild")
+  a:fire("CHAT_MSG_GUILD", "anyone for ZG?", "Guildie")
+  a:drain()
+  openWindow(b)
+  showTab(b, "guild")
+  typeInWindow(b, "me!")
+  b:drain()
+  local said = saidIn(a, "GUILD")
+  if #said ~= 1 or said[1] ~= "me!" then error("the guild did not hear it") end
+  if whisperedTo(b, "Salahaja") > 0 then error("whispered the other window to ask it") end
+  if not string.find(table.concat(windowLines(b), "\n"), "me!", 1, true) then
+    error("what was said is not shown on the Guild tab")
+  end
+end)
+
+step("/wg answers the guild too", function()
+  local a, b = guildPair()
+  a:cmd("guild")
+  a:fire("CHAT_MSG_GUILD", "anyone for ZG?", "Guildie")
+  a:drain()
+  b.chat = {}
+  b:toGuild("on my way")
+  b:drain()
+  local said = saidIn(a, "GUILD")
+  if #said ~= 1 or said[1] ~= "on my way" then error("the guild did not hear it") end
+  -- The relay window is shut, so what was said shows where you typed it.
+  if times(b, "on my way") ~= 1 then error("nothing shown for what was said") end
+end)
+
+step("the All tab never answers the guild, however recently it spoke", function()
+  local a, b = guildPair()
+  a:cmd("guild")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  a:fire("CHAT_MSG_GUILD", "lol", "Guildie")
+  a:drain()
+  openWindow(b)
+  showTab(b, "all")
+  typeInWindow(b, "brb")
+  b:drain()
+  if #saidIn(a, "GUILD") > 0 then error("a reply on All went to the guild") end
+  local toBobby = toTarget(a, "Bobby")
+  if #toBobby ~= 1 or toBobby[1].text ~= "brb" then error("the whisper was not answered") end
+end)
+
+step("guild chat works over whispers too, for a window with quiet off", function()
+  local a = newClient("Salahaja", { guild = "Some Guild" })
+  local b = newClient("Salabeard")
+  a.roster = { "Salahaja", "Guildie" }
+  a:cmd("guild")
+  a:fire("CHAT_MSG_GUILD", "anyone for ZG?", "Guildie")
+  a:drain()
+  for _, m in ipairs(toTarget(a, "Salabeard")) do b:deliver("Salahaja", m.text) end
+  b:toGuild("me!")
+  b:drain()
+  for _, m in ipairs(toTarget(b, "Salahaja")) do a:deliver("Salabeard", m.text) end
+  local said = saidIn(a, "GUILD")
+  if #said ~= 1 or said[1] ~= "me!" then error("the guild did not hear it") end
+end)
+
+step("guild chat is not forwarded to a window in the same guild", function()
+  local a = guildPair()
+  a.roster = { "Salahaja", "Salabeard", "Guildie" }
+  a:cmd("guild")
+  a:fire("CHAT_MSG_GUILD", "hello", "Guildie")
+  a:drain()
+  if #carried(a, "Salabeard") > 0 or whisperedTo(a, "Salabeard") > 0 then
+    error("sent it to a window that already has it")
+  end
+end)
+
+step("the roster is asked for when guild chat is switched on, and at login", function()
+  local a = guildPair()
+  local before = a.rosterAsked
+  a:cmd("guild")
+  if a.rosterAsked <= before then error("not asked for when switched on") end
+  local a2 = newClient("Salahaja", { db = a.env.WhisperRelayDB, guild = "Some Guild" })
+  if a2.rosterAsked < 1 then error("not asked for at login") end
+end)
+
+step("a stranger cannot make you speak in your guild", function()
+  local a = guildPair()
+  a:fire("CHAT_MSG_ADDON", "TW_CHAT_MSG_WHISPER",
+    "\tWRqm" .. a.WR.Encode(">$give me gold"), "GUILD", "Evil")
+  a:drain()
+  if #saidIn(a, "GUILD") > 0 then error("spoke in the guild for a stranger") end
+end)
+
+step("a window that has left its guild says so, rather than nothing", function()
+  local a, b = guildPair()
+  a:cmd("guild")
+  a:fire("CHAT_MSG_GUILD", "anyone for ZG?", "Guildie")
+  a:drain()
+  a.guildName = nil
+  a.chat = {}
+  b:toGuild("hi")
+  b:drain()
+  if #saidIn(a, "GUILD") > 0 then error("tried to speak in a guild it is not in") end
+  if not string.find(table.concat(a.chat, "\n"), "not in a guild any more", 1, true) then
+    error("said nothing: " .. table.concat(a.chat, " | "))
+  end
+end)
+
+step("a busy guild pauses guild forwarding, and not the party's", function()
+  local a, b = guildPair()
+  a:cmd("guild")
+  a:cmd("group")
+  a.party = { "Bobby" }
+  for i = 1, 30 do a:fire("CHAT_MSG_GUILD", "chatter " .. i, "Guildie") end
+  a:drain()
+  local guildLines = 0
+  for _, entry in ipairs(b.WR.chatLog) do
+    if entry.kind == "guild" then guildLines = guildLines + 1 end
+  end
+  if guildLines > 25 then error(guildLines .. " guild lines got through the limit") end
+  a:fire("CHAT_MSG_PARTY", "pull in 10", "Bobby")
+  a:drain()
+  if times(b, "pull in 10") < 1 then error("the guild's pause silenced the party") end
+end)
+
+--[[ A unit check of the window's history rather than a whole conversation:
+     the rate limit would take several minutes of clock to push this much
+     guild chat through. ]]
+step("the relay window keeps its whispers however much the guild says", function()
+  local b = newClient("Salabeard")
+  b.WR.ChatAdd("from Bobby: important", "whisper")
+  for i = 1, 100 do b.WR.ChatAdd("chatter " .. i, "guild") end
+  local whispers, guild = 0, 0
+  for _, entry in ipairs(b.WR.chatLog) do
+    if entry.kind == "whisper" then whispers = whispers + 1 end
+    if entry.kind == "guild" then guild = guild + 1 end
+  end
+  if whispers ~= 1 then error("the guild pushed the whisper out") end
+  if guild ~= 60 then error("kept " .. guild .. " guild lines, not the last 60") end
+end)
+
+step("the settings window and the minimap menu have the guild switch", function()
+  local a = guildPair()
+  a:cmd("config")
+  local switch
+  for _, box in ipairs(a.WR.panel.boxes) do
+    if box.key == "guildChat" then switch = box end
+  end
+  if not switch then error("no guild switch in the settings window") end
+  a:click(switch)
+  if not a.WR.config.guildChat then error("clicking it did not turn it on") end
+  local lines = openMenu(a)
+  if not (lines["Forward guild chat"] and lines["Forward guild chat"].checked) then
+    error("the menu does not show it on")
+  end
+end)
+
+----------------------------------------------------------------------
+-- the keyboard
+----------------------------------------------------------------------
+
+print("\n  the keyboard\n")
+
+--[[ Found in game: click into the relay window's box, then click a mob, and
+     every keybind after that went into the box as text until Escape. A box
+     has the keyboard only while it is being typed in. ]]
+step("the relay box gives the keyboard back once a line is sent", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  local e = chatBox(b)
+  e:SetFocus()                               -- clicked into it
+  e:SetText("five minutes")
+  e.scripts.OnEnterPressed()
+  if e.focused then error("still holding the keyboard after sending") end
+end)
+
+step("a click in the world takes the keyboard back from the relay box", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  local e = chatBox(b)
+  e:SetFocus()
+  e:SetText("half a thought")
+  b:clickWorld("LeftButton")                 -- a mob
+  if e.focused then error("a left-click in the world left the box the keyboard") end
+  if e:GetText() ~= "half a thought" then error("what was typed was thrown away") end
+  e:SetFocus()
+  b:clickWorld("RightButton")
+  if e.focused then error("a right-click in the world left the box the keyboard") end
+end)
+
+step("a click in the world still reaches what listened for it before", function()
+  local heard = 0
+  local b = newClient("Salabeard", { worldScript = function() heard = heard + 1 end })
+  b:cmd("chat")
+  chatBox(b):SetFocus()
+  b:clickWorld()
+  if heard ~= 1 then error("the script that was there before did not run") end
+  if chatBox(b).focused then error("and the box kept the keyboard") end
+end)
+
+step("a click on the window around the relay box takes the keyboard back", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  local e = chatBox(b)
+  e:SetFocus()
+  b:press(chatWindow(b))
+  if e.focused then error("a click beside the box left it the keyboard") end
+end)
+
+step("closing the relay window takes the keyboard back", function()
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  local e = chatBox(b)
+  e:SetFocus()
+  b:cmd("chat")                              -- closed again
+  if e.focused then error("a hidden box kept the keyboard") end
+end)
+
+step("the settings box gives the keyboard back too, and keeps what was typed", function()
+  local a = newClient("Salahaja")
+  a:cmd("config")
+  local e = replyBox(a)
+  e:SetFocus()
+  e:SetText("gone fishing")
+  a:clickWorld()
+  if e.focused then error("a world click left the settings box the keyboard") end
+  if a.WR.config.replyText ~= "gone fishing" then error("what was typed was not kept") end
+  e:SetFocus()
+  a:cmd("config")                            -- closed
+  if e.focused then error("closing the settings left its box the keyboard") end
+end)
+
+step("a world click leaves alone a box of ours not being typed in", function()
+  -- Nothing of ours has the keyboard, so nothing of ours is told to let go
+  -- of it: whatever does have it -- the chat frame's box -- keeps it.
+  local b = newClient("Salabeard")
+  b:cmd("chat")
+  local e = chatBox(b)
+  local before = e.clearCalls
+  b:clickWorld()
+  if e.clearCalls ~= before then error("let go of a keyboard it did not have") end
 end)
 
 print(string.format("\n%d passed, %d failed  \n", pass, fail))

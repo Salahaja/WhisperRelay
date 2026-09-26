@@ -87,6 +87,12 @@ local RELAY = ">@"
      None of the other markers contain a %, and none of them should. ]]
 local SAY = ">+"
 
+--[[ "Say this in your guild." SAY's twin: a party and a guild are different
+     rooms, and the window in one need not be in the other, so each request
+     names its own. Honoured only from one of our own windows, like both of
+     the others. ]]
+local GUILD_SAY = ">$"
+
 --[[ Party chat is not one message an hour like a whisper -- a busy run is a
      line every few seconds, and every forwarded line is a whisper of its own.
      Left ungoverned that is a flood, and the client's own protection answers
@@ -159,12 +165,17 @@ local defaults = {
        becomes a whisper, which is a lot of traffic to turn on for somebody
        without asking. ]]
   groupChat = false,
+  -- Off by default for the same reason: a guild talks all day.
+  guildChat = false,
   --[[ Your windows send each other addon messages rather than whispers, so
        the relay's own traffic stays out of chat. Off goes back to whispers
        for everything. ]]
   quiet = true,
   -- Open the relay window on the window a whisper is forwarded to.
   openChat = true,
+  -- The minimap button, and where round the edge it sits: degrees, 0 is east.
+  minimap = true,
+  minimapAngle = 225,
 }
 
 ----------------------------------------------------------------------
@@ -534,6 +545,7 @@ function WR.FromWindow(message, from)
   if WR.ShowGroupChat(message, from) then return end
   if WR.OnRelayRequest(message, from) then return end
   if WR.OnSayRequest(message, from) then return end
+  if WR.OnGuildSayRequest(message, from) then return end
   local name, body = WR.ParseForward(message)
   if not name then return end
   WR.lastForward = { from = name, via = from }
@@ -782,7 +794,7 @@ function WR.IsLoop(sender, message, targets)
   -- Already relayed once: someone else's relay, or ours coming back.
   local head = string.sub(message or "", 1, 2)
   if head == MARK or head == ALERT or head == GROUP or head == RELAY
-     or head == SAY then
+     or head == SAY or head == GUILD_SAY then
     return true
   end
   return false
@@ -828,44 +840,90 @@ function WR.TargetsOutsideGroup()
   return out
 end
 
+--[[ Who is in the guild with this character, as far as the client's roster
+     knows -- which is nothing until it has been asked for (WR.AskRoster).
+     Until then nobody is known to be in it and every window gets the line,
+     so one in the same guild sees it twice for a moment. Never not at all. ]]
+function WR.GuildMembers()
+  local here = {}
+  if not GetNumGuildMembers or not GetGuildRosterInfo then return here end
+  for i = 1, (GetNumGuildMembers() or 0) do
+    local name = GetGuildRosterInfo(i)
+    if name then here[name] = true end
+  end
+  return here
+end
+
+--- The windows that would not otherwise hear guild chat.
+function WR.TargetsOutsideGuild()
+  local here, out = WR.GuildMembers(), {}
+  local targets = WR.Targets()
+  for i = 1, table.getn(targets) do
+    if not here[targets[i]] then table.insert(out, targets[i]) end
+  end
+  return out
+end
+
+--- Ask the server for the guild roster, if there is a guild to ask about.
+function WR.AskRoster()
+  if WR.config.guildChat and IsInGuild and IsInGuild() and GuildRoster then
+    GuildRoster()
+  end
+end
+
 --[[ Has this run away with itself? Counted over a rolling minute rather than
      per message, because the thing that trips flood protection is the rate,
-     not any one line. ]]
-function WR.GroupAllowed()
+     not any one line. Party and guild are counted apart: a busy guild must
+     not silence the party you are standing in. ]]
+local FLOW_WORDS = {
+  group = "that group is talking faster than this can forward|r - group chat",
+  guild = "the guild is talking faster than this can forward|r - guild chat",
+}
+WR.flow = {}
+
+function WR.GroupAllowed(stream)
+  stream = stream or "group"
   local now = time()
+  local f = WR.flow[stream] or {}
+  WR.flow[stream] = f
 
-  if WR.groupMutedUntil then
-    if now < WR.groupMutedUntil then return false end
-    WR.groupMutedUntil = nil
-    WR.groupCount, WR.groupWindow = 0, now
+  if f.mutedUntil then
+    if now < f.mutedUntil then return false end
+    f.mutedUntil = nil
+    f.count, f.window = 0, now
   end
 
-  if not WR.groupWindow or (now - WR.groupWindow) >= 60 then
-    WR.groupWindow, WR.groupCount = now, 0
+  if not f.window or (now - f.window) >= 60 then
+    f.window, f.count = now, 0
   end
 
-  WR.groupCount = (WR.groupCount or 0) + 1
-  if WR.groupCount > GROUP_MAX_PER_MIN then
-    WR.groupMutedUntil = now + GROUP_MUTE_FOR
-    Print(WARN .. "that group is talking faster than this can forward|r - " ..
-      "group chat paused for " .. (GROUP_MUTE_FOR / 60) .. " minutes so the " ..
-      "client does not start dropping what you send.")
+  f.count = (f.count or 0) + 1
+  if f.count > GROUP_MAX_PER_MIN then
+    f.mutedUntil = now + GROUP_MUTE_FOR
+    Print(WARN .. FLOW_WORDS[stream] .. " paused for " .. (GROUP_MUTE_FOR / 60) ..
+      " minutes so the client does not start dropping what you send.")
     return false
   end
 
   return true
 end
 
---- kind is one character: P party, R raid, W raid warning.
+--- kind is one character: P party, R raid, W raid warning, G guild.
 function WR.OnGroupChat(kind, message, sender)
   if not WR.ready or not WR.config.enabled then return end
-  if not WR.config.groupChat then return end
+  local guild = (kind == "G")
+  if guild then
+    if not WR.config.guildChat then return end
+  elseif not WR.config.groupChat then
+    return
+  end
   if not sender or sender == WR.me then return end
   if not message or message == "" then return end
 
-  local targets = WR.TargetsOutsideGroup()
+  local targets
+  if guild then targets = WR.TargetsOutsideGuild() else targets = WR.TargetsOutsideGroup() end
   if table.getn(targets) == 0 then return end
-  if not WR.GroupAllowed() then return end
+  if not WR.GroupAllowed(guild and "guild" or "group") then return end
 
   --[[ Two separators then the rest, so a line containing one survives. Only
        the kind and the speaker's name are fielded, and a name cannot hold a
@@ -894,6 +952,14 @@ function WR.ShowGroupChat(message, via)
 
   local speaker = string.sub(rest, 1, sep - 1)
   local said = string.sub(rest, sep + 1)
+
+  --[[ Guild chat goes to the relay window alone, on a tab of its own. A
+       guild talks all day; the chat frame is for what is said to you. ]]
+  if kind == "G" then
+    WR.lastGuildFrom = via
+    WR.ChatAdd(WR.WindowLine(via, "Guild", speaker, said), "guild")
+    return true
+  end
 
   --[[ Remembered so /wp can answer into that group. It is the window that
        forwarded the line, not the person who said it: they are in the group,
@@ -1119,6 +1185,16 @@ function WR.ReplyThrough(text)
   WR.ChatAdd(WR.WindowLine(last.via, "sent", last.from, text), "whisper")
 end
 
+--- One of our own windows: a character we forward to. The requests to speak
+--- -- whisper, group, guild -- are honoured from these alone.
+function WR.IsMine(name)
+  local targets = WR.Targets()
+  for i = 1, table.getn(targets) do
+    if targets[i] == name then return true end
+  end
+  return false
+end
+
 --[[ Someone asked us to say something. Honoured only from our own windows.
 
      Without that check this is a remote mouth: anyone who worked out the
@@ -1134,11 +1210,7 @@ function WR.OnRelayRequest(message, sender)
   local target = string.sub(body, 1, sep - 1)
   local said = string.sub(body, sep + 1)
 
-  local mine = false
-  for _, name in ipairs(WR.Targets()) do
-    if name == sender then mine = true end
-  end
-  if not mine then
+  if not WR.IsMine(sender) then
     Print(WARN .. sender .. " asked this character to whisper somebody|r, and " ..
       "is not one of your windows. Ignored.")
     return true
@@ -1197,18 +1269,68 @@ function WR.WindowLine(onChar, kind, who, said)
     WR.NameLink(who) .. ": " .. said
 end
 
+----------------------------------------------------------------------
+-- the keyboard
+----------------------------------------------------------------------
+
+--[[ A box here has the keyboard only while you are typing in it. A click
+     puts it there; sending, Escape, a click anywhere else -- in the world or
+     on the window around the box -- or closing its window gives it back.
+     Held any longer, the next keybind lands in the box as text.
+
+     Whether a box has it is tracked from its own OnEditFocusGained and
+     OnEditFocusLost, not asked with HasFocus, which not every 1.12 client
+     has. A focus script the box already had still runs. ]]
+WR.boxes = {}
+
+function WR.TrackFocus(box)
+  local gained = box:GetScript("OnEditFocusGained")
+  local lost = box:GetScript("OnEditFocusLost")
+  box:SetScript("OnEditFocusGained", function()
+    box.typing = true
+    if gained then gained() end
+  end)
+  box:SetScript("OnEditFocusLost", function()
+    box.typing = false
+    if lost then lost() end
+  end)
+  table.insert(WR.boxes, box)
+end
+
+--- Take the keyboard back from whichever of our boxes has it -- only ours.
+function WR.ReleaseKeyboard()
+  for i = 1, table.getn(WR.boxes) do
+    local box = WR.boxes[i]
+    if box.typing then box:ClearFocus() end
+  end
+end
+
+--[[ A click in the world -- a mob, the ground, anything that is not a window
+     -- arrives at WorldFrame's OnMouseDown, whichever button. Chained the way
+     Dewdrop chains it: the script already there runs first, as before. ]]
+function WR.HookWorldClicks()
+  if WR.worldHooked or not WorldFrame then return end
+  WR.worldHooked = true
+  local previous = WorldFrame:GetScript("OnMouseDown")
+  WorldFrame:SetScript("OnMouseDown", function()
+    if previous then previous() end
+    WR.ReleaseKeyboard()
+  end)
+end
+
 --- Keep a little history, so opening the window is not opening an empty one.
 --[[ Tabs by KIND rather than by conversation.
 
      Whispers scrolling party chat away is the actual complaint: they arrive
      at different rates about different things, and the one you are watching
      is rarely the one filling the window. Splitting them fixes that with
-     three fixed tabs. A tab per person would multiply without limit in a
-     raid, and the thing being separated here is not who is talking. ]]
+     fixed tabs. A tab per person would multiply without limit in a raid, and
+     the thing being separated here is not who is talking. ]]
 WR.TABS = {
   { key = "all",     label = "All" },
   { key = "whisper", label = "Whispers" },
   { key = "group",   label = "Party" },
+  { key = "guild",   label = "Guild" },
 }
 
 --- Does this line belong on that tab? Alerts live on All alone.
@@ -1220,7 +1342,15 @@ end
 function WR.ChatAdd(text, kind)
   local entry = { text = text, kind = kind }
   table.insert(WR.chatLog, entry)
-  while table.getn(WR.chatLog) > CHAT_BUFFER do table.remove(WR.chatLog, 1) end
+  --[[ The last CHAT_BUFFER lines of each kind, not of everything: a guild in
+       full flow would otherwise push the whispers out of the window. ]]
+  local count = 0
+  for i = table.getn(WR.chatLog), 1, -1 do
+    if WR.chatLog[i].kind == kind then
+      count = count + 1
+      if count > CHAT_BUFFER then table.remove(WR.chatLog, i) end
+    end
+  end
 
   --[[ Where a reply would go, remembered from whatever arrived last. This is
        what lets one input box work instead of asking every time. ]]
@@ -1262,6 +1392,16 @@ function WR.ChatDestination()
     return nil, "no group chat has been forwarded here yet"
   end
 
+  if tab == "guild" then
+    if WR.lastGuildFrom then
+      return "guild", "the guild " .. WR.lastGuildFrom .. " is in"
+    end
+    return nil, "no guild chat has been forwarded here yet"
+  end
+
+  --[[ All never answers the guild, however recently it spoke: a guild talks
+       all day, and a reply meant for a whisper must not land in front of
+       everyone in it. The Guild tab is for that. ]]
   if WR.chatContext == "group" and WR.lastGroupFrom then
     return "group", "the group " .. WR.lastGroupFrom .. " is in"
   end
@@ -1270,6 +1410,9 @@ function WR.ChatDestination()
   end
   if WR.lastGroupFrom then
     return "group", "the group " .. WR.lastGroupFrom .. " is in"
+  end
+  if WR.lastGuildFrom then
+    return nil, "to talk to the guild, use the Guild tab"
   end
   return nil, "nothing has come through yet"
 end
@@ -1338,13 +1481,16 @@ end
 
 function WR.SendFromChat(text)
   if not text or text == "" then return end
-  local kind = WR.ChatDestination()
+  local kind, description = WR.ChatDestination()
   if kind == "group" then
     WR.SayInGroup(text)
+  elseif kind == "guild" then
+    WR.SayInGuild(text)
   elseif kind == "whisper" then
     WR.ReplyThrough(text)
   else
-    Print("nothing has been relayed here yet, so there is nowhere to answer.")
+    -- Refused, with the reason the line above the box already gives.
+    Print("not sent: " .. description .. ".")
   end
 end
 
@@ -1506,13 +1652,20 @@ function WR.BuildChat()
   edit:SetScript("OnEnterPressed", function()
     local said = edit:GetText() or ""
     edit:SetText("")
+    -- Sent: the keyboard goes back to the game. Another line is a click away.
+    edit:ClearFocus()
     WR.SendFromChat(said)
   end)
   edit:SetScript("OnEscapePressed", function()
     edit:SetText("")
     edit:ClearFocus()
   end)
+  WR.TrackFocus(edit)
   f.edit = edit
+
+  -- A click on the window around the box, or closing it, hands it back too.
+  f:SetScript("OnMouseDown", function() WR.ReleaseKeyboard() end)
+  f:SetScript("OnHide", function() WR.ReleaseKeyboard() end)
 
   --[[ The grip. Everything inside is anchored to the frame's edges rather
        than sized in pixels, so dragging this reflows the lot without a
@@ -1607,11 +1760,7 @@ function WR.OnSayRequest(message, sender)
   local said = string.sub(text, string.len(SAY) + 1)
   if said == "" then return true end
 
-  local mine = false
-  for _, name in ipairs(WR.Targets()) do
-    if name == sender then mine = true end
-  end
-  if not mine then
+  if not WR.IsMine(sender) then
     Print(WARN .. sender .. " asked this character to speak to its group|r, " ..
       "and is not one of your windows. Ignored.")
     return true
@@ -1628,6 +1777,64 @@ function WR.OnSayRequest(message, sender)
   SendChatMessage(said, raid > 0 and "RAID" or "PARTY")
   if WR.config.announce then
     DEFAULT_CHAT_FRAME:AddMessage(DIM .. "said to the group for " .. sender ..
+      ": " .. said .. "|r")
+  end
+  return true
+end
+
+--- Say something in guild chat, through the window that is in the guild.
+function WR.SayInGuild(text)
+  if not WR.ready then return end
+  if not text or text == "" then
+    Print("nothing to say. " .. DIM .. "/wg <message>|r")
+    return
+  end
+
+  local via = WR.lastGuildFrom
+  if not via then
+    Print("no guild chat has been forwarded here yet, so there is no guild " ..
+      "to answer.")
+    return
+  end
+
+  if via == WR.me then
+    SendChatMessage(text, "GUILD")
+    return
+  end
+
+  WR.Queue(GUILD_SAY .. string.gsub(text, "%s+", " "), via)
+  WR.ChatAdd(WR.WindowLine(via, "sent", "the guild", text), "guild")
+  -- Shown where you are looking: the relay window, or chat when it is shut.
+  if not (WR.chatFrame and WR.chatFrame:IsShown()) then
+    DEFAULT_CHAT_FRAME:AddMessage("|cff40ff40[" .. via .. " Guild] " ..
+      tostring(WR.me) .. ":|r " .. text)
+  end
+end
+
+--[[ Someone asked us to say something in our guild. Whether we are still in
+     one is decided here, where it is known, as with the group. ]]
+function WR.OnGuildSayRequest(message, sender)
+  local text = message or ""
+  if string.sub(text, 1, string.len(GUILD_SAY)) ~= GUILD_SAY then return false end
+
+  local said = string.sub(text, string.len(GUILD_SAY) + 1)
+  if said == "" then return true end
+
+  if not WR.IsMine(sender) then
+    Print(WARN .. sender .. " asked this character to speak in its guild|r, " ..
+      "and is not one of your windows. Ignored.")
+    return true
+  end
+
+  if not (IsInGuild and IsInGuild()) then
+    Print(DIM .. sender .. " asked this character to say something in guild " ..
+      "chat, but it is not in a guild any more.|r")
+    return true
+  end
+
+  SendChatMessage(said, "GUILD")
+  if WR.config.announce then
+    DEFAULT_CHAT_FRAME:AddMessage(DIM .. "said to the guild for " .. sender ..
       ": " .. said .. "|r")
   end
   return true
@@ -1796,9 +2003,30 @@ local SWITCHES = {
     note = "a bot reply in their window; off by default" },
   { key = "groupChat", label = "Forward party and raid chat",
     note = "only to windows that are not in that group" },
+  { key = "guildChat", label = "Forward guild chat",
+    note = "to the relay window of those not in that guild" },
   { key = "announce",  label = "Note each forward here",
     note = "so you can see it happening" },
 }
+
+--[[ Flip one switch, and whatever else that takes. The settings window and
+     the minimap menu both come through here, so neither can forget a part. ]]
+function WR.Toggle(key)
+  WR.config[key] = not WR.config[key]
+  -- Turning the popup off should take down one already on screen.
+  if key == "popup" and not WR.config.popup then WR.HidePopup() end
+  if key == "quiet" then WR.QuietChanged() end
+  --[[ Back on means "try them again", as /wf on does. The refusal that
+       switched it off would otherwise leave a named target unreachable, and
+       forwarding "on" that forwards nowhere. ]]
+  if key == "enabled" and WR.config.enabled then
+    WR.offline = {}
+    WR.others, WR.othersAt = nil, nil
+  end
+  -- Who is in the guild decides where guild chat goes; ask now, not later.
+  if key == "guildChat" then WR.AskRoster() end
+  WR.RefreshPanel()
+end
 
 local function checkbox(parent, index, switch)
   local b = CreateFrame("Button", nil, parent)
@@ -1828,13 +2056,7 @@ local function checkbox(parent, index, switch)
   text:SetText(switch.label)
 
   b.tick, b.key, b.note = tick, switch.key, switch.note
-  b:SetScript("OnClick", function()
-    WR.config[switch.key] = not WR.config[switch.key]
-    -- Turning the popup off should take down one already on screen.
-    if switch.key == "popup" and not WR.config.popup then WR.HidePopup() end
-    if switch.key == "quiet" then WR.QuietChanged() end
-    WR.RefreshPanel()
-  end)
+  b:SetScript("OnClick", function() WR.Toggle(switch.key) end)
   return b
 end
 
@@ -1976,6 +2198,9 @@ function WR.BuildPanel()
   end)
 
   f.edit, f.editFrame = edit, boxFrame
+  WR.TrackFocus(edit)
+  -- A click on the window around the box closes it, and closing hands it back.
+  f:SetScript("OnHide", function() WR.ReleaseKeyboard() end)
 
   --[[ What the other person actually receives, {char} filled in. The token is
        the one part of this nobody can be expected to picture. ]]
@@ -2028,7 +2253,7 @@ function WR.RefreshPanel()
   --[[ Never overwrite what is being typed. Refresh runs on every click in
        this window, and replacing the text under the cursor mid-sentence is
        the kind of thing that makes a settings window feel broken. ]]
-  if not f.edit:HasFocus() then
+  if not f.edit.typing then
     f.edit:SetText(usingDefault and DEFAULT_REPLY or (WR.config.replyText or ""))
   end
   if usingDefault then
@@ -2078,6 +2303,183 @@ function WR.TogglePanel()
   end
 end
 
+--- Open, never close: for a menu line that says "open".
+function WR.OpenPanel()
+  if not WR.BuildPanel():IsShown() then WR.TogglePanel() end
+end
+
+function WR.OpenChat()
+  if not WR.BuildChat():IsShown() then WR.ToggleChat() end
+end
+
+----------------------------------------------------------------------
+-- the minimap button
+----------------------------------------------------------------------
+
+--[[ Left-click for the settings window, right-click for a menu of the
+     switches you reach for mid-game, drag to move it round the edge.
+
+     The menu is the client's own dropdown, like every right-click menu in
+     the game. Each line carries its setting as data, not in a function made
+     for it: on this client a function made inside a loop does not keep the
+     loop's values. ]]
+local MINIMAP_RADIUS = 80
+local MENU_SWITCHES = { "enabled", "quiet", "openChat", "groupChat", "guildChat",
+                        "alerts", "popup" }
+
+--- A switch's words, the same as the settings window's.
+function WR.SwitchLabel(key)
+  for i = 1, table.getn(SWITCHES) do
+    if SWITCHES[i].key == key then return SWITCHES[i].label end
+  end
+  return key
+end
+
+--- Round the rim at the saved angle: 0 is east, 90 north.
+function WR.PlaceMinimapButton()
+  local b = WR.minimapButton
+  if not b then return end
+  local a = math.rad(WR.config.minimapAngle or 225)
+  b:ClearAllPoints()
+  b:SetPoint("CENTER", Minimap, "CENTER",
+    MINIMAP_RADIUS * math.cos(a), MINIMAP_RADIUS * math.sin(a))
+end
+
+--- Following the cursor round the rim, every frame of a drag.
+function WR.DragMinimapButton()
+  local mx, my = Minimap:GetCenter()
+  local px, py = GetCursorPosition()
+  local scale = Minimap:GetEffectiveScale()
+  WR.config.minimapAngle = math.deg(math.atan2(py / scale - my, px / scale - mx))
+  WR.PlaceMinimapButton()
+end
+
+--- Built the way the client builds its own tracking button beside the map.
+function WR.BuildMinimapButton()
+  if WR.minimapButton then return WR.minimapButton end
+  if not Minimap then return nil end
+
+  local b = CreateFrame("Button", "WhisperRelayMinimapButton", Minimap)
+  b:SetWidth(32)
+  b:SetHeight(32)
+  b:SetFrameStrata("MEDIUM")
+  b:SetFrameLevel(8)
+  b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+  local icon = b:CreateTexture(nil, "BACKGROUND")
+  icon:SetTexture("Interface\\Icons\\INV_Letter_15")
+  icon:SetWidth(20)
+  icon:SetHeight(20)
+  icon:SetPoint("TOPLEFT", b, "TOPLEFT", 6, -6)
+
+  local border = b:CreateTexture(nil, "OVERLAY")
+  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  border:SetWidth(52)
+  border:SetHeight(52)
+  border:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
+
+  b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  b:RegisterForDrag("LeftButton")
+  b:SetScript("OnClick", function() WR.MinimapClick(arg1) end)
+  b:SetScript("OnDragStart", function()
+    this:SetScript("OnUpdate", WR.DragMinimapButton)
+  end)
+  b:SetScript("OnDragStop", function()
+    this:SetScript("OnUpdate", nil)
+  end)
+  b:SetScript("OnEnter", function() WR.MinimapTooltip(this) end)
+  b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  WR.minimapButton = b
+  WR.PlaceMinimapButton()
+  return b
+end
+
+--- Shown or not, as the setting says; built the first time it is wanted.
+function WR.ShowMinimapButton()
+  if WR.config.minimap then
+    local b = WR.BuildMinimapButton()
+    if b then b:Show() end
+  elseif WR.minimapButton then
+    WR.minimapButton:Hide()
+  end
+end
+
+function WR.HideMinimapButton()
+  WR.config.minimap = false
+  WR.ShowMinimapButton()
+  Print("minimap button hidden. |cffe0a22c/wf minimap|r brings it back.")
+end
+
+function WR.MinimapClick(button)
+  if button == "RightButton" then
+    WR.ShowMinimapMenu()
+  else
+    CloseDropDownMenus()
+    WR.TogglePanel()
+  end
+end
+
+function WR.MinimapTooltip(owner)
+  GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
+  GameTooltip:SetText("Whisper Relay")
+  local targets = WR.Targets()
+  local state
+  if not WR.config.enabled then
+    state = "Forwarding is off"
+  elseif table.getn(targets) > 0 then
+    state = "Forwarding to " .. table.concat(targets, ", ")
+  else
+    state = "Nobody to forward to yet"
+  end
+  GameTooltip:AddLine(state, 1, 1, 1)
+  GameTooltip:AddLine("Left-click: settings", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("Right-click: quick switches", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("Drag: move it round the minimap", 0.7, 0.7, 0.7)
+  GameTooltip:Show()
+end
+
+--[[ A switch picked in the menu. The client hands over the line's arg1; an
+     older one only the line itself, as `this`, with the setting as its
+     value. ]]
+function WR.MenuPick(key)
+  if type(key) ~= "string" then key = this and this.value end
+  if type(key) == "string" then WR.Toggle(key) end
+end
+
+function WR.MinimapMenuInit()
+  UIDropDownMenu_AddButton({ text = "Whisper Relay", isTitle = 1, notCheckable = 1 })
+  for i = 1, table.getn(MENU_SWITCHES) do
+    local key = MENU_SWITCHES[i]
+    UIDropDownMenu_AddButton({
+      text = WR.SwitchLabel(key),
+      value = key,
+      arg1 = key,
+      checked = WR.config[key] and 1 or nil,
+      keepShownOnClick = 1,
+      func = WR.MenuPick,
+    })
+  end
+  UIDropDownMenu_AddButton({ text = "Open the relay window", notCheckable = 1,
+    func = WR.OpenChat })
+  UIDropDownMenu_AddButton({ text = "All settings...", notCheckable = 1,
+    func = WR.OpenPanel })
+  UIDropDownMenu_AddButton({ text = "Hide this button", notCheckable = 1,
+    func = WR.HideMinimapButton })
+end
+
+--- Opened at the cursor; a second right-click closes it again.
+function WR.ShowMinimapMenu()
+  local menu = WR.minimapMenu
+  if not menu then
+    menu = CreateFrame("Frame", "WhisperRelayMinimapMenu", UIParent,
+      "UIDropDownMenuTemplate")
+    UIDropDownMenu_Initialize(menu, WR.MinimapMenuInit, "MENU")
+    WR.minimapMenu = menu
+  end
+  ToggleDropDownMenu(1, nil, menu, "cursor")
+end
+
 --- An alert arriving from the other client. Loud, and nobody to reply to.
 function WR.ShowAlert(message, sender)
   local text = message or ""
@@ -2103,6 +2505,7 @@ function WR.OnWhisper(message, sender)
   if WR.ShowGroupChat(message, sender) then return end
   if WR.OnRelayRequest(message, sender) then return end
   if WR.OnSayRequest(message, sender) then return end
+  if WR.OnGuildSayRequest(message, sender) then return end
 
   --[[ Before anything else, and before the target check: the character you
        are PLAYING is usually the one with no target of its own, and it is the
@@ -2320,6 +2723,7 @@ local function Usage()
   line("/wf chat", "the relay window: read it all here and answer from it")
   line("/wr <message>", "answer a whisper AS the character they wrote to")
   line("/wp <message>", "talk in the party your other window is in")
+  line("/wg <message>", "talk in the guild your other window is in")
 
   line("/wf", "this list, with the current state above it")
   line("/wf status", "the state on its own")
@@ -2338,6 +2742,7 @@ local function Usage()
   line("/wf every <secs>", "how often one person may be answered")
 
   line("/wf group", "forward party and raid chat to windows outside it")
+  line("/wf guild", "forward guild chat to the relay window of those outside it")
   line("/wf alerts", "pass on battleground and dungeon queue pops")
   line("/wf popup", "show an arriving pop on screen, not only in chat")
 
@@ -2346,6 +2751,7 @@ local function Usage()
   line("/wf echo", "note each forward in this window too")
   line("/wf quiet", "your windows talk in addon messages, not whispers (on)")
   line("/wf autoopen", "open the relay window when a whisper is forwarded here (on)")
+  line("/wf minimap", "show or hide the minimap button")
 
   line("/wf demo", "show what a forward looks like, to test clicking")
   line("/wf testpop", "show the popup now")
@@ -2511,6 +2917,12 @@ function WR.Command(input)
         "whisper each other as before.")
     end
 
+  elseif cmd == "minimap" then
+    WR.config.minimap = not WR.config.minimap
+    WR.ShowMinimapButton()
+    Print("minimap button: " .. (WR.config.minimap and (OK .. "shown|r.") or
+      "hidden. |cffe0a22c/wf minimap|r brings it back."))
+
   elseif cmd == "autoopen" then
     WR.config.openChat = not WR.config.openChat
     Print("the relay window " .. (WR.config.openChat
@@ -2521,6 +2933,12 @@ function WR.Command(input)
     WR.config.groupChat = not WR.config.groupChat
     Print("forwarding party and raid chat: " ..
       (WR.config.groupChat and "on" or "off"))
+
+  elseif cmd == "guild" then
+    WR.Toggle("guildChat")
+    Print("forwarding guild chat: " .. (WR.config.guildChat and
+      ("on -- it goes to the Guild tab of the relay window, and you answer " ..
+       "from there or with |cffe0a22c/wg|r.") or "off."))
 
   elseif cmd == "chat" or cmd == "window" then
     WR.ToggleChat()
@@ -2586,6 +3004,7 @@ frame:RegisterEvent("CHAT_MSG_PARTY")
 frame:RegisterEvent("CHAT_MSG_RAID")
 frame:RegisterEvent("CHAT_MSG_RAID_LEADER")
 frame:RegisterEvent("CHAT_MSG_RAID_WARNING")
+frame:RegisterEvent("CHAT_MSG_GUILD")
 frame:RegisterEvent("PLAYER_LOGOUT")
 
 function WR.Init()
@@ -2608,6 +3027,8 @@ function WR.Init()
     -- Saved per account, so logging in on the target itself is normal.
     WR.config.target = nil
   end
+
+  WR.ShowMinimapButton()
 
   --[[ Say we are here straight away rather than in a minute: the other client
        is probably already waiting to find out, and a whisper arriving in the
@@ -2639,7 +3060,9 @@ frame:SetScript("OnEvent", function()
     -- ChatFrame_OnEvent has done so by now, so we wrap theirs rather than
     -- having ours thrown away.
     WR.InstallChatHook()
+    WR.HookWorldClicks()
     WR.QuietStart()
+    WR.AskRoster()
   elseif event == "CHAT_MSG_WHISPER" then
     WR.OnWhisper(arg1, arg2)
   elseif event == "CHAT_MSG_SYSTEM" then
@@ -2655,6 +3078,8 @@ frame:SetScript("OnEvent", function()
     WR.OnGroupChat("R", arg1, arg2)
   elseif event == "CHAT_MSG_RAID_WARNING" then
     WR.OnGroupChat("W", arg1, arg2)
+  elseif event == "CHAT_MSG_GUILD" then
+    WR.OnGroupChat("G", arg1, arg2)
   elseif event == "PLAYER_LOGOUT" then
     -- So the other windows stop sending here, and ask again once we are back.
     if WR.ready then WR.QuietLogout() end
@@ -2676,4 +3101,7 @@ SlashCmdList["WHISPERRELAYREPLY"] = function(msg) WR.ReplyThrough(msg) end
 
 SLASH_WHISPERRELAYPARTY1 = "/wp"
 SlashCmdList["WHISPERRELAYPARTY"] = function(msg) WR.SayInGroup(msg) end
+
+SLASH_WHISPERRELAYGUILD1 = "/wg"
+SlashCmdList["WHISPERRELAYGUILD"] = function(msg) WR.SayInGuild(msg) end
 SlashCmdList["WHISPERRELAY"] = function(msg) WR.Command(msg) end
