@@ -1,8 +1,8 @@
 ## Interface: 11200
 ## Title: Whisper Relay
-## Notes: Forwards whispers to a character you nominate on your other account, with who they came from, and can tell the sender which character you are actually on.
+## Notes: Forwards whispers to your other windows, with who they came from, without whispering between them - and can tell the sender which character you are actually on.
 ## Author: Salahaja
-## Version: 1.8.0
+## Version: 1.9.0
 ## DefaultState: enabled
 ## SavedVariables: WhisperRelayDB
 WhisperRelay.lua

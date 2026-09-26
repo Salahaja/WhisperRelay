@@ -46,11 +46,24 @@ end
 -- one client
 ----------------------------------------------------------------------
 
-local function newClient(name)
+local function newClient(name, opts)
   local c = { name = name, sent = {}, chat = {}, sounds = 0, clientShown = {},
               byName = {} }
   local env = setmetatable({}, { __index = _G })
   c.env = env
+
+  --[[ Most of this suite was written for whispers between windows, and still
+       describes them exactly: they are what a window that is NOT on this
+       machine gets, and what `/wf quiet off` brings back. So its clients start
+       with the quiet channel off, as saved settings would have it. The quiet
+       channel has a section of its own at the end, with clients that leave it
+       on, as it ships. `opts.db` is the saved variables a /reload keeps. ]]
+  opts = opts or {}
+  if opts.db then
+    env.WhisperRelayDB = opts.db
+  elseif not opts.quiet then
+    env.WhisperRelayDB = { quiet = false }
+  end
 
   env.UnitName = function() return name end
   env.time = function() return clock.t end
@@ -3246,6 +3259,325 @@ step("an unknown command still gets the list", function()
   if not string.find(table.concat(a.chat, "\n"), "/wf chat", 1, true) then
     error("said nothing useful about an unknown command")
   end
+end)
+
+----------------------------------------------------------------------
+-- the quiet channel
+----------------------------------------------------------------------
+
+print("\n  the quiet channel: windows on this machine, without whispers\n")
+
+--- A window with the quiet channel on, as it ships; `db` to come back from a /reload.
+local function quietClient(name, db)
+  return newClient(name, { quiet = true, db = db })
+end
+
+--- Every message a window has left in its outbox for `to`.
+local function mailFor(from, to)
+  local out = {}
+  for line in string.gfind(files["WhisperRelay_out_" .. from .. ".txt"] or "", "[^\n]+") do
+    local _, _, target, body = string.find(line, "^M~%d+~([^~]*)~%d+~%d+~(.*)$")
+    if target == to then table.insert(out, body) end
+  end
+  return out
+end
+
+local function shown(c) return table.concat(c.chat, "\n") end
+local function whisperedTo(c, target) return table.getn(toTarget(c, target)) end
+
+step("quiet: a forward to a window on this machine is mail, not a whisper", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  if whisperedTo(a, "Salabeard") > 0 then error("whispered the other window") end
+  if table.getn(mailFor("Salahaja", "Salabeard")) ~= 1 then error("left it no mail") end
+  b.chat = {}
+  b:tick(1)
+  if not string.find(shown(b), "you around?", 1, true) then
+    error("the other window never showed it: " .. shown(b))
+  end
+  if not string.find(shown(b), "|Hplayer:Bobby|h", 1, true) then
+    error("Bobby's name is not clickable: " .. shown(b))
+  end
+  if b.sounds < 1 then error("it arrived without a sound") end
+end)
+
+step("quiet: each message is taken once", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "just once")
+  a:drain()
+  b.chat = {}
+  for _ = 1, 10 do b:tick(1) end
+  local n = 0
+  for _, line in ipairs(b.chat) do
+    if string.find(line, "just once", 1, true) then n = n + 1 end
+  end
+  if n ~= 1 then error("shown " .. n .. " times") end
+end)
+
+step("quiet: a /reload here does not hand it over again", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "before the reload")
+  a:drain()
+  b:tick(1)
+  local b2 = quietClient("Salabeard", b.env.WhisperRelayDB)
+  b2.chat = {}
+  b2:tick(1)
+  if string.find(shown(b2), "before the reload", 1, true) then
+    error("delivered twice across a reload")
+  end
+  a:deliver("Bobby", "after it")
+  a:drain()
+  b2:tick(1)
+  if not string.find(shown(b2), "after it", 1, true) then
+    error("lost what came after the reload")
+  end
+end)
+
+step("quiet: the sender's /reload is a fresh start, not old news again", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "first")
+  a:drain()
+  b:tick(1)
+  local a2 = quietClient("Salahaja", a.env.WhisperRelayDB)
+  a2:deliver("Bobby", "second")
+  a2:drain()
+  b.chat = {}
+  b:tick(1)
+  if not string.find(shown(b), "second", 1, true) then error("the new login's message never came") end
+  if string.find(shown(b), "first", 1, true) then error("the old one came again") end
+end)
+
+step("quiet: /wr answers through the folder, and only the real reply is a whisper", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  b:tick(1)
+  b:reply("five minutes")
+  b:drain()
+  if whisperedTo(b, "Salahaja") > 0 then error("whispered the other window to ask it") end
+  a:tick(1)
+  a:drain()
+  local said = toTarget(a, "Bobby")
+  if table.getn(said) ~= 1 or said[1].text ~= "five minutes" then
+    error("Bobby did not get the answer from Salahaja")
+  end
+end)
+
+step("quiet: party chat and /wp go through the folder", function()
+  local a = quietClient("Alpha")
+  local b = quietClient("Bravo")
+  a:cmd("group")
+  a.party = { "Bobby", "Charlie" }
+  a:fire("CHAT_MSG_PARTY", "pull in 10", "Bobby")
+  a:drain()
+  if whisperedTo(a, "Bravo") > 0 then error("whispered party chat to the other window") end
+  b.chat = {}
+  b:tick(1)
+  if not string.find(shown(b), "pull in 10", 1, true) then
+    error("the party line never arrived: " .. shown(b))
+  end
+  b:toParty("coming")
+  b:drain()
+  if whisperedTo(b, "Alpha") > 0 then error("whispered the other window to say it") end
+  a:tick(1)
+  local party = {}
+  for _, m in ipairs(a.sent) do
+    if m.chan == "PARTY" then table.insert(party, m.text) end
+  end
+  if table.getn(party) ~= 1 or party[1] ~= "coming" then error("the party did not hear it") end
+end)
+
+step("quiet: a queue pop goes through the folder", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a.queues[1] = { status = "confirm", map = "Warsong Gulch" }
+  a:fire("UPDATE_BATTLEFIELD_STATUS")
+  a:drain()
+  if table.getn(alerts(a, "Salabeard")) > 0 then error("whispered the pop") end
+  b.chat = {}
+  b:tick(1)
+  if not string.find(shown(b), "Warsong Gulch", 1, true) then error("the pop never arrived") end
+end)
+
+step("quiet: a character not on this machine still gets a whisper", function()
+  local a = quietClient("Salahaja")
+  a:cmd("to Friendo")
+  a:deliver("Bobby", "hello")
+  a:drain()
+  if whisperedTo(a, "Friendo") ~= 1 then error("did not whisper the friend") end
+end)
+
+step("quiet: the sender's auto-answer is still a whisper", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:cmd("reply on")
+  a:deliver("Bobby", "hi")
+  a:drain()
+  if whisperedTo(a, "Bobby") ~= 1 then error("Bobby was not answered") end
+  if whisperedTo(a, "Salabeard") > 0 then error("the forward was whispered") end
+end)
+
+step("quiet: a window running an older copy is whispered as before", function()
+  local a = quietClient("Salahaja")
+  local b = newClient("Salabeard")          -- quiet off: never reads the folder
+  a:deliver("Bobby", "hi")
+  a:drain()
+  if whisperedTo(a, "Salabeard") ~= 1 then
+    error("left mail for a window that will never read it")
+  end
+end)
+
+step("quiet: a window that logs out is whispered again at once", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  b:fire("PLAYER_LOGOUT")
+  clock.t = clock.t + 1                     -- a new second: nothing cached
+  a:deliver("Bobby", "hi")
+  a:drain()
+  clock.t = clock.t - 1
+  if whisperedTo(a, "Salabeard") ~= 1 then error("left mail for a window that logged out") end
+end)
+
+step("quiet: a window that stops answering is whispered again", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  clock.t = clock.t + 30                    -- b has not said it is reading for 30s
+  a:deliver("Bobby", "hi")
+  a:drain()
+  clock.t = clock.t - 30
+  if whisperedTo(a, "Salabeard") ~= 1 then error("left mail for a window that went quiet") end
+end)
+
+step("quiet: mail for another window is left for that window", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  local c = quietClient("Mahidot")
+  a:cmd("to Mahidot")
+  a:deliver("Bobby", "for Mahidot only")
+  a:drain()
+  b.chat, c.chat = {}, {}
+  b:tick(1)
+  c:tick(1)
+  if string.find(shown(b), "for Mahidot only", 1, true) then error("Salabeard took Mahidot's mail") end
+  if not string.find(shown(c), "for Mahidot only", 1, true) then error("Mahidot never got it") end
+end)
+
+step("quiet: old mail is cleared out of the file", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "old news")
+  a:drain()
+  clock.t = clock.t + 130
+  a:tick(11)                                -- past the heartbeat: rewritten
+  local left = table.getn(mailFor("Salahaja", "Salabeard"))
+  clock.t = clock.t - 130
+  if left ~= 0 then error("kept " .. left .. " old message(s)") end
+end)
+
+step("quiet: a line caught half-written is left for the next read", function()
+  local b = quietClient("Salabeard")
+  local a = quietClient("Salahaja")
+  local now = clock.t
+  files["WhisperRelay_out_Salahaja.txt"] =
+    "WR2~s1~" .. now .. "\nM~1~Salabeard~" .. now .. "~22~>> Bobby: half writ"
+  b.chat = {}
+  b:tick(1)
+  if string.find(shown(b), "half writ", 1, true) then error("took a line still being written") end
+  files["WhisperRelay_out_Salahaja.txt"] =
+    "WR2~s1~" .. now .. "\nM~1~Salabeard~" .. now .. "~22~>> Bobby: half written\n"
+  b:tick(1)
+  if not string.find(shown(b), "half written", 1, true) then error("never took it once whole") end
+end)
+
+step("quiet: nothing that arrives through the folder is forwarded on", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a:deliver("Bobby", "no bouncing")
+  a:drain()
+  b:tick(1)
+  b:drain()
+  if whisperedTo(b, "Salahaja") > 0 or table.getn(mailFor("Salabeard", "Salahaja")) > 0 then
+    error("the forward went round again")
+  end
+end)
+
+step("quiet: /wf quiet off goes back to whispers, and tells the other window", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  b:cmd("quiet off")
+  clock.t = clock.t + 1
+  a:deliver("Bobby", "hi")
+  a:drain()
+  b:deliver("Bobby", "hey")
+  b:drain()
+  clock.t = clock.t - 1
+  if whisperedTo(a, "Salabeard") ~= 1 then error("still left mail for a window that turned it off") end
+  if whisperedTo(b, "Salahaja") ~= 1 then error("the window that turned it off did not whisper") end
+end)
+
+step("quiet: the settings window has the switch, and it takes effect at once", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  b:cmd("config")
+  local switch
+  for _, box in ipairs(b.WR.panel.boxes) do
+    if box.key == "quiet" then switch = box end
+  end
+  if not switch then error("no quiet switch in the settings window") end
+  b:click(switch)
+  if b.WR.config.quiet then error("clicking it did not turn it off") end
+  clock.t = clock.t + 1
+  a:deliver("Bobby", "hi")
+  a:drain()
+  clock.t = clock.t - 1
+  if whisperedTo(a, "Salabeard") ~= 1 then error("the other window was not told") end
+end)
+
+step("quiet: /wf status says who is reached without whispers", function()
+  local a = quietClient("Salahaja")
+  local b = quietClient("Salabeard")
+  a.chat = {}
+  a:cmd("status")
+  if not string.find(shown(a), "no whispers to Salabeard", 1, true) then
+    error("status did not say: " .. shown(a))
+  end
+end)
+
+step("quiet: a window forwarding to a name it was given is still heard", function()
+  -- Saved as named-target mode: it never says "forward to me", only that it
+  -- reads the folder.
+  local a = quietClient("Salahaja", { auto = false, target = "Mahidot" })
+  local c = quietClient("Mahidot")
+  a:deliver("Bobby", "named, not found")
+  a:drain()
+  if whisperedTo(a, "Mahidot") > 0 then error("whispered Mahidot") end
+  c.chat = {}
+  c:tick(1)
+  if not string.find(shown(c), "named, not found", 1, true) then
+    error("Mahidot never looked in the named window's outbox")
+  end
+end)
+
+step("quiet: trimming the presence file keeps the quiet windows", function()
+  local a = quietClient("Salahaja")
+  files["WhisperRelay_presence.txt"] =
+    string.rep("P~Filler~" .. clock.t .. "\n", 3000) .. "Q~Quietone~" .. clock.t .. "\n"
+  a.WR.ReadPresence()
+  a.WR.ReadPresence()
+  if not a.WR.quietSeen["Quietone"] then error("trimming dropped a window that reads the folder") end
+end)
+
+step("quiet off leaves nothing in the folder but presence", function()
+  local a = newClient("Salahaja")
+  a:deliver("Bobby", "hi")
+  a:drain()
+  if files["WhisperRelay_out_Salahaja.txt"] then error("wrote an outbox with quiet off") end
 end)
 
 print(string.format("\n%d passed, %d failed  \n", pass, fail))

@@ -1,13 +1,17 @@
 # Whisper Relay
 
 Multi-boxing on WoW 1.12. A whisper landing on one of your windows is
-forwarded — as a whisper — to **every other one running on this machine**.
-Four accounts means three windows you are not looking at, and whichever one
-you happen to be in front of has the message, with the sender's name clickable
-so you can answer from there.
+forwarded to **every other one running on this machine**. Four accounts means
+three windows you are not looking at, and whichever one you happen to be in
+front of has the message, with the sender's name clickable so you can answer
+from there.
 
 It does the same for party and raid chat, and for battleground and dungeon
 queue pops, which expire on a timer while you are looking somewhere else.
+
+Your windows pass all of this to each other through a folder they share, not
+by whispering, so none of the back and forth between your own characters shows
+up in chat — see [The quiet channel](#the-quiet-channel).
 
 ## Install
 
@@ -114,6 +118,52 @@ auto-answered — telling someone to go whisper a character who is offline would
 be worse than saying nothing. `/wf` lists every character the shared file has
 heard from and how long ago, so a client that is not joining in is obvious.
 
+## The quiet channel
+
+Everything your windows tell each other — forwards, `/wr` and `/wp`, party
+chat, queue pops — used to be a whisper, and a whisper shows up twice:
+`To Salahaja: >> Bobby: you around?` in the window sending it, and the whisper
+itself in the window getting it. With two or three windows relaying, that was
+most of what the chat frame said.
+
+Now your windows on this machine leave each other messages in the same shared
+folder instead, and nothing crosses the server at all. A forward still arrives
+in the window you are looking at, with the whisper sound and the name
+clickable:
+
+    [Bobby] whispers: you around?  (via Salahaja)
+
+— and there is no `To ...` line in the window that passed it on, or anywhere
+else.
+
+Why not an addon channel, which is how addons usually talk out of sight? On
+1.12 an addon message only travels over a party, raid, battleground or guild
+channel, so your windows would have to be grouped or guilded together to hear
+each other at all. And it goes to *everyone* in that channel, which is no
+place for somebody's private whisper. The folder needs neither, and nothing in
+it leaves your PC.
+
+Each window writes one file of its own, its outbox, and nothing else ever
+writes it. The others read it a few times a second and take what is addressed
+to them, once each. A `/reload` on either side shows you nothing twice, and
+anything that was waiting is still picked up afterwards.
+
+**What is still a whisper:**
+
+- anyone who is not one of your windows on this machine — a friend you
+  forward to with `/wf to`, a second PC, and the auto-answer;
+- the reply `/wr` sends to the person who wrote to you, because that one is
+  the conversation;
+- a window running an older copy of Whisper Relay, or with quiet switched off
+  — it never says it reads the folder, so nothing is left there for it;
+- a window that has logged out, or has stopped answering for half a minute.
+
+`/wf quiet off`, or the switch in `/wf config`, goes back to whispers for
+everything, and tells your other windows at once so they stop leaving this one
+mail. It needs Nampower's file API, the same as automatic mode, and without it
+everything is a whisper as before. `/wf status` names the windows it reaches
+without whispering.
+
 ## Answering
 
 Clicking a forwarded name opens a whisper to that person **from the character
@@ -203,15 +253,19 @@ auto-answered:
 - anything already carrying the `>>` marker, or the `>!` one alerts use
 - anything from yourself
 
+Mail left through the quiet channel never gets that far: it is shown, or
+acted on when it is a `/wr` or `/wp`, and is never forwarded again.
+
 `tools/test_relay.lua` loads two real copies of the addon, points them at each
 other and feeds one client's output into the other, which is the only way to
 test this properly.
 
 ## Worth knowing
 
-- **The forwards are real whispers.** The text of your private messages
-  travels over the wire the same way any whisper does. If that matters, don't
-  forward.
+- **Between your own windows nothing is whispered**, so the text of your
+  private messages stays on your PC. A forward to anyone else — a friend, a
+  second PC — is a real whisper, and travels over the wire the same way any
+  whisper does. If that matters, don't forward to them.
 - **Whispers over 255 characters are split** into up to three parts, marked
   `1)`, `2)`. An item link that lands on a split will not survive as a link.
 - **A target that is not online stops it rather than being shouted at.** One
@@ -258,6 +312,7 @@ test this properly.
 | `/wf inline` | Clickable name in the message, or on a line under it |
 | `/wf link` | That fallback line, when the message cannot be rewritten |
 | `/wf echo` | Note each forward in this window too |
+| `/wf quiet [on\|off]` | Your windows on this PC talk through the shared folder, not whispers (on) |
 | `/wf demo` | Show what a forward looks like, to test clicking |
 | `/wf testpop` | Show the popup now |
 | `/wf test` | Send a test forward to the other window |
