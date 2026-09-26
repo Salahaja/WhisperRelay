@@ -1,22 +1,22 @@
 --[[ Whisper Relay
 
-A whisper arriving on one of your windows is forwarded, as a whisper, to every
-other one running on this machine. Four accounts means three windows you are
-not looking at, and whichever one you happen to be in front of has the message.
-The forward carries who it came from, with the name clickable, so you can
-answer from there.
+A whisper arriving on one of your windows is forwarded to every other one
+running on this machine. Four accounts means three windows you are not looking
+at, and whichever one you happen to be in front of has the message. The
+forward carries who it came from, with the name clickable, so you can answer
+from there.
 
 It can also answer the sender for you, telling them which character you are on
 so they stop whispering the one nobody is watching. Off by default: that is a
 bot reply appearing in someone else's window, which should be a decision.
 
-Between windows on this machine nothing is whispered at all: they leave each
-other messages in the shared folder (the quiet channel, below), so none of the
-back and forth shows up in chat. Anything else - a friend you forward to by
-name, a second machine, the sender's auto-answer - is an ordinary whisper,
-which needs nothing shared and reaches anyone. Working out WHO to forward to on
-its own needs the shared folder too, and naming a character by hand replaces
-that.
+Between your windows nothing is whispered at all: they send each other addon
+messages (the quiet channel, below), which no chat frame shows, so none of the
+back and forth clutters chat - and they need no party or guild in common.
+A window running an older copy, or with quiet off, gets an ordinary whisper,
+and so does the sender's auto-answer, which is for a person. Working out WHO
+to forward to on its own needs the shared folder, and naming a character by
+hand replaces that.
 
 Loops are the danger here. Every client forwarding to every other is the
 arrangement out of the box, and it is also the obvious way to bounce one
@@ -159,10 +159,12 @@ local defaults = {
        becomes a whisper, which is a lot of traffic to turn on for somebody
        without asking. ]]
   groupChat = false,
-  --[[ Windows on this machine talk through the shared folder rather than
-       whispering each other, so the relay's own traffic stays out of chat.
-       Off goes back to whispers for everything. ]]
+  --[[ Your windows send each other addon messages rather than whispers, so
+       the relay's own traffic stays out of chat. Off goes back to whispers
+       for everything. ]]
   quiet = true,
+  -- Open the relay window on the window a whisper is forwarded to.
+  openChat = true,
 }
 
 ----------------------------------------------------------------------
@@ -176,21 +178,34 @@ WR.Print = Print
 -- sending
 ----------------------------------------------------------------------
 
-function WR.Queue(text, target)
-  if WR.QuietTo(target) then
-    WR.Post(text, target)
-    return
-  end
-  table.insert(WR.queue, { text = text, target = target })
+--- `person` for someone who is not one of your windows: always a whisper.
+function WR.Queue(text, target, person)
+  table.insert(WR.queue, { text = text, target = target, person = person })
 end
 
+--[[ Each message goes the way WR.Route says, decided as it leaves rather than
+     as it is queued, because a window's answer can arrive in between.
+     Addon messages go at once, every piece: the server does not count them
+     as chat for flooding, and the inspect window sends dozens back to back.
+     Whispers still go one at a time, SEND_GAP apart. A window yet to answer
+     holds up its own messages and nobody else's. ]]
 function WR.Flush(step)
   WR.sinceSend = WR.sinceSend + (step or 0)
-  if WR.sinceSend < SEND_GAP then return end
-  local job = table.remove(WR.queue, 1)
-  if not job then return end
-  WR.sinceSend = 0
-  SendChatMessage(job.text, "WHISPER", nil, job.target)
+  local i = 1
+  while i <= table.getn(WR.queue) do
+    local job = WR.queue[i]
+    local route = WR.Route(job)
+    if route == "addon" then
+      table.remove(WR.queue, i)
+      WR.SendQuiet(job)
+    elseif route == "whisper" and WR.sinceSend >= SEND_GAP then
+      table.remove(WR.queue, i)
+      WR.sinceSend = 0
+      SendChatMessage(job.text, "WHISPER", nil, job.target)
+    else
+      i = i + 1
+    end
+  end
 end
 
 --[[ Split so that marker, sender and body all fit. A long whisper arrives in
@@ -254,24 +269,16 @@ function WR.FileAPI()
 end
 
 function WR.Beat(step)
-  if not (WR.config.auto or WR.config.quiet) or not WR.FileAPI() then return end
+  if not WR.config.auto or not WR.FileAPI() then return end
   WR.sinceBeat = (WR.sinceBeat or BEAT) + (step or 0)
   if WR.sinceBeat < BEAT then return end
   WR.sinceBeat = 0
-  --[[ "P" is "forward to me", and only automatic mode says it. "Q" is "I
-       read the shared folder": the other windows need to know to look in
-       this one's outbox even when it forwards to a character named by hand.
-       Older copies read only P lines and skip these. ]]
-  local lines = ""
-  if WR.config.auto then lines = "P~" .. WR.me .. "~" .. time() .. "\n" end
-  if WR.config.quiet then lines = lines .. "Q~" .. WR.me .. "~" .. time() .. "\n" end
-  pcall(WriteCustomFile, PRESENCE, lines, "a")
+  pcall(WriteCustomFile, PRESENCE, "P~" .. WR.me .. "~" .. time() .. "\n", "a")
 end
 
 --- name -> the most recent time it said it was logged in.
 function WR.ReadPresence()
   local seen = {}
-  WR.quietSeen = {}
   if not WR.FileAPI() then return seen end
   local ok, text = pcall(ReadCustomFile, PRESENCE)
   if not ok or not text then return seen end
@@ -282,13 +289,6 @@ function WR.ReadPresence()
       stamp = tonumber(stamp) or 0
       if not seen[name] or stamp > seen[name] then seen[name] = stamp end
     end
-    local _, _, quiet, qstamp = string.find(line, "^Q~([^~]+)~(%d+)$")
-    if quiet then
-      qstamp = tonumber(qstamp) or 0
-      if not WR.quietSeen[quiet] or qstamp > WR.quietSeen[quiet] then
-        WR.quietSeen[quiet] = qstamp
-      end
-    end
   end
 
   -- Trimmed by whoever notices. Losing a heartbeat to the race costs a minute.
@@ -297,196 +297,239 @@ function WR.ReadPresence()
     for name, stamp in pairs(seen) do
       table.insert(keep, "P~" .. name .. "~" .. stamp)
     end
-    for name, stamp in pairs(WR.quietSeen) do
-      table.insert(keep, "Q~" .. name .. "~" .. stamp)
-    end
     pcall(WriteCustomFile, PRESENCE, table.concat(keep, "\n") .. "\n", "w")
   end
   return seen
 end
 
 ----------------------------------------------------------------------
--- the quiet channel: your windows on this machine, without whispers
+-- the quiet channel: your windows, without whispers
 ----------------------------------------------------------------------
 
 --[[ Every forward, answer, pop and line of party chat between your own
-     windows used to be a whisper, and a whisper shows up twice: "To
-     Salabeard: >> Bobby: ..." in the window sending it, and the whisper itself
-     in the window getting it. With two or three windows relaying, that is most
-     of what the chat frame says.
+     windows used to be a whisper, and a whisper shows up twice: "To Salahaja:
+     >> Bobby: ..." in the window sending it, and the whisper itself in the
+     window getting it. With two or three windows relaying, that was most of
+     what the chat frame said.
 
-     Windows on this machine already share CustomData/, so they leave each
-     other messages there instead, and nothing crosses the server at all.
-     Addon messages were the other candidate, and are worse at it: on 1.12
-     they only travel over a party, raid or guild channel - so both windows
-     would have to be grouped or guilded together - and they go to everyone
-     in that channel, which is no place for somebody's private whisper.
+     So they travel as addon messages, which no chat frame shows. On 1.12 an
+     addon message only goes over a party, raid, battleground or guild
+     channel, and to everyone on it -- but this server adds a way to send one
+     to a single player by name, grouped, guilded or not: a GUILD message
+     whose prefix is "TW_CHAT_MSG_WHISPER<Name>" is taken out of the guild
+     traffic and handed to Name alone. The inspect window's talent tab runs on
+     it. It arrives with the prefix "TW_CHAT_MSG_WHISPER", a tab in front of
+     the text and the real sender's name, and when Name is not online the
+     server answers "Error:CantFindPlayer:Name" the same way.
 
-     Each window keeps ONE file of its own, its outbox, and nothing else ever
-     writes it: messages for the other windows, kept for a couple of minutes,
-     under a line saying it is here and reading ITS mail. The others read it a
-     few times a second and take what is addressed to them, once each.
+     The server cuts the name out of the prefix at EVERY ">" and refuses the
+     message if there is more than one, so what we send never contains one --
+     nor anything another of its handlers would take for its own. WR.Encode.
 
-     Anyone who is not one of your windows on this machine - a friend you
-     forward to by name, a second PC, the sender's auto-answer - still gets a
-     whisper, because only a whisper can reach them. So does a window running
-     an older copy, which never says it reads the folder, so nothing is ever
-     left there for it. ]]
-local OUTBOX = "WhisperRelay_out_"
-local OUTBOX_KEEP = 120    -- seconds a message waits to be picked up
-local OUTBOX_BEAT = 10     -- how often a window says it is reading its mail
-local QUIET_LIVE = 25      -- how fresh that has to be to leave it mail
-local POLL = 0.25          -- how often the others' outboxes are read
+     Nothing goes to a window until it has answered a hello. A window running
+     an older copy, one with quiet switched off, a server without this, or a
+     person rather than one of your windows would swallow an addon message
+     without a trace -- so a window's messages wait for its answer (a moment,
+     the first time), and one that never answers is whispered, as before. ]]
+local TW_WHISPER = "TW_CHAT_MSG_WHISPER"
+local QUIET_TAG = "WRq"
+local QUIET_MAX = 244      -- one addon message, prefix and all; the client stops at 254
+local QUIET_ASK = 3        -- seconds a first message waits for the answer
+local QUIET_RETRY = 60     -- a window that did not answer is asked again after this
+local QUIET_PIECES = 2400  -- more than a whisper cut in three; beyond it, not ours
 
-WR.outbox, WR.outSeq = {}, 0
-WR.sincePoll, WR.sinceOutBeat = 0, 0
-WR.quietCache = {}
-WR.quietSeen = {}
+WR.peers = {}              -- lower-case name -> what we know of that window
+WR.partial = {}            -- lower-case sender -> a long message so far
+WR.uptime = 0              -- seconds of OnUpdate: the clock every wait here runs on
 
-function WR.OutboxName(name)
-  return OUTBOX .. name .. ".txt"
+--[[ Escaped: ">" (the server's separator), "|" (so a link travels intact
+     whatever the client makes of it), "_" (so no "TW_..." handler of the
+     server's takes the text for its own), "&" (the escape itself), and line
+     breaks. A hardcore character's addon message is dropped outright if it
+     says "LFT" anywhere, so that is broken up too. ]]
+local QUIET_ESCAPE = { ["&"] = "&a", [">"] = "&g", ["|"] = "&p", ["_"] = "&u" }
+local QUIET_UNESCAPE = { a = "&", g = ">", p = "|", u = "_", t = "T" }
+
+function WR.Encode(text)
+  text = string.gsub(text or "", "[\r\n\t]", " ")
+  text = string.gsub(text, "[&>|_]", function(c) return QUIET_ESCAPE[c] end)
+  text = string.gsub(text, "LFT", "LF&t")
+  return text
 end
 
---[[ Rewrite our own outbox: the line saying we are here, then every message
-     from the last OUTBOX_KEEP seconds. `gone` says the opposite - logging
-     out, or quiet switched off - so the other windows go back to whispering
-     at once rather than leaving mail nobody will read. Messages already there
-     stay: whoever they are for can still pick them up. ]]
-function WR.WriteOutbox(gone)
-  if not WR.FileAPI() or not WR.me then return end
-  if not gone and not WR.config.quiet then return end
-  local now, keep = time(), {}
-  local beat = now
-  if gone then beat = 0 end
-  local lines = { "WR2~" .. tostring(WR.session) .. "~" .. beat }
-  for i = 1, table.getn(WR.outbox) do
-    local m = WR.outbox[i]
-    if now - m.time <= OUTBOX_KEEP then
-      table.insert(keep, m)
-      -- The length is how a reader knows it did not catch the line half-written.
-      table.insert(lines, "M~" .. m.seq .. "~" .. m.to .. "~" .. m.time .. "~" ..
-        string.len(m.text) .. "~" .. m.text)
-    end
-  end
-  WR.outbox = keep
-  pcall(WriteCustomFile, WR.OutboxName(WR.me), table.concat(lines, "\n") .. "\n", "w")
+function WR.Decode(text)
+  -- Always a string back: in the client's Lua, a nil here would become "".
+  return (string.gsub(text or "", "&(.)", function(c)
+    return QUIET_UNESCAPE[c] or c
+  end))
 end
 
---- Another window's outbox, or nil when there is none.
-function WR.ReadOutbox(name)
-  if not WR.FileAPI() then return nil end
-  local ok, text = pcall(ReadCustomFile, WR.OutboxName(name))
-  if not ok or type(text) ~= "string" then return nil end
-  local box = { messages = {} }
-  for line in string.gfind(text, "[^\n]+") do
-    local _, _, session, beat = string.find(line, "^WR2~([^~]+)~(%d+)$")
-    if session then
-      box.session, box.beat = session, tonumber(beat)
-    else
-      local _, _, seq, to, stamp, len, body =
-        string.find(line, "^M~(%d+)~([^~]*)~(%d+)~(%d+)~(.*)$")
-      -- A line caught half-written is left for the next read.
-      if seq and string.len(body) == tonumber(len) then
-        table.insert(box.messages, { seq = tonumber(seq), to = to,
-                                     time = tonumber(stamp), text = body })
-      end
-    end
-  end
-  if not box.session then return nil end
-  return box
+function WR.QuietAPI()
+  return type(SendAddonMessage) == "function"
 end
 
---- Whether a character is one of your windows on this machine, reading its
---- mail right now - and so can be told things without a whisper.
-function WR.QuietTo(target)
+function WR.QuietOn()
   if not WR.config or not WR.config.quiet then return false end
-  if not target or target == WR.me or not WR.FileAPI() then return false end
-  local now = time()
-  local cached = WR.quietCache[target]
-  if cached and cached.at == now then return cached.live end
-  local box = WR.ReadOutbox(target)
-  local live = false
-  if box and box.beat and box.beat > 0 and (now - box.beat) <= QUIET_LIVE then
-    live = true
-  end
-  WR.quietCache[target] = { at = now, live = live }
-  return live
+  return WR.QuietAPI()
 end
 
---- Leave a message for another window.
-function WR.Post(text, target)
-  WR.outSeq = WR.outSeq + 1
-  table.insert(WR.outbox, { seq = WR.outSeq, to = target, time = time(),
-                            text = (string.gsub(text or "", "\n", " ")) })
-  WR.WriteOutbox()
+--- What we know of one of your windows, made on first mention.
+function WR.Peer(name)
+  local key = string.lower(name)
+  local p = WR.peers[key]
+  if not p then
+    p = { name = name }
+    WR.peers[key] = p
+  end
+  return p
 end
 
---- The windows on this machine that could be leaving us mail.
-function WR.Neighbours()
-  local now = time()
-  if WR.neighbours and WR.neighboursAt and (now - WR.neighboursAt) < 5 then
-    return WR.neighbours
-  end
-  local found, out = {}, {}
-  for name, stamp in pairs(WR.ReadPresence()) do
-    if name ~= WR.me and (now - stamp) < LIVE then found[name] = true end
-  end
-  for name, stamp in pairs(WR.quietSeen) do
-    if name ~= WR.me and (now - stamp) < LIVE then found[name] = true end
-  end
-  for name in pairs(found) do table.insert(out, name) end
-  table.sort(out)
-  WR.neighbours, WR.neighboursAt = out, now
-  return out
+--- One addon message to one character, through the server.
+function WR.QuietSend(target, kind, text)
+  pcall(SendAddonMessage, TW_WHISPER .. "<" .. target .. ">",
+    QUIET_TAG .. kind .. (text or ""), "GUILD")
 end
 
---[[ Read every other window's outbox and take what is ours. What has been
-     taken is remembered per window and per login of it, in saved variables,
-     so a /reload here does not hand it all over a second time. ]]
-function WR.ReadMail()
-  local now = time()
-  local list = WR.Neighbours()
-  for i = 1, table.getn(list) do
-    local name = list[i]
-    local box = WR.ReadOutbox(name)
-    if box then
-      local key = name .. ">" .. WR.me
-      local seen = WR.config.seen[key]
-      if not seen or seen.session ~= box.session then
-        seen = { session = box.session, seq = 0 }
-        WR.config.seen[key] = seen
-      end
-      for n = 1, table.getn(box.messages) do
-        local m = box.messages[n]
-        if m.to == WR.me and m.seq > seen.seq and (now - m.time) <= OUTBOX_KEEP then
-          seen.seq = m.seq
-          WR.OnLocal(m.text, name)
-        end
-      end
+--- Ask a window whether it takes addon messages; WR.OnQuiet hears the answer.
+function WR.Hello(target)
+  if not WR.QuietOn() or not target or target == WR.me then return end
+  WR.Peer(target).asked = WR.uptime
+  WR.QuietSend(target, "h")
+end
+
+--[[ Hello to ourselves. The server handing it straight back is the proof it
+     passes these at all, whoever else is logged in. ]]
+function WR.Ping()
+  if not WR.QuietOn() then return end
+  WR.quietWorks, WR.pingAt = nil, WR.uptime
+  WR.QuietSend(WR.me, "p")
+end
+
+--[[ How one message goes: "addon", "whisper", or "wait" for its window to
+     answer a hello. A message for a person -- the sender's auto-answer -- is
+     always a whisper: they are not one of your windows, and an addon message
+     would reach them as nothing at all. ]]
+function WR.Route(job)
+  if job.person or not WR.QuietOn() then return "whisper" end
+  local p = WR.Peer(job.target)
+  if p.state == "yes" then return "addon" end
+  if p.state == "no" then
+    -- Asked again now and then, without holding anything up for it.
+    if WR.uptime - (p.asked or 0) >= QUIET_RETRY then WR.Hello(job.target) end
+    return "whisper"
+  end
+  if p.state == "offline" then
+    --[[ What was waiting when the server said so goes as a whisper, and is
+         refused like one. After that, it may well have logged in. ]]
+    if WR.uptime - p.at < QUIET_ASK then return "whisper" end
+    p.state, p.asked = nil, nil
+  end
+  if not p.asked then
+    WR.Hello(job.target)
+    return "wait"
+  end
+  if WR.uptime - p.asked < QUIET_ASK then return "wait" end
+  p.state = "no"
+  return "whisper"
+end
+
+--- One message as addon messages, in pieces when it will not fit in one.
+function WR.SendQuiet(job)
+  local rest = WR.Encode(job.text)
+  local room = QUIET_MAX - string.len(TW_WHISPER .. "<" .. job.target .. ">")
+    - string.len(QUIET_TAG) - 1
+  while string.len(rest) > room do
+    -- Never between the bytes of one letter.
+    local cut = room
+    while cut > 1 do
+      local b = string.byte(rest, cut + 1)
+      if not b or b < 128 or b >= 192 then break end
+      cut = cut - 1
     end
+    WR.QuietSend(job.target, "c", string.sub(rest, 1, cut))
+    rest = string.sub(rest, cut + 1)
+  end
+  WR.QuietSend(job.target, "m", rest)
+  WR.Peer(job.target).sent = WR.uptime
+end
+
+--[[ An addon message on the server's whisper prefix. The inspect window and
+     other addons use the prefix too, each with words of its own; they ignore
+     ours as we ignore theirs.
+
+     h  hello: do you take these?      a  yes          o  no, quiet is off
+     b  logging out, or a /reload      p  our own hello, back from the server
+     c  a piece of a long message      m  a message, or the last piece of one ]]
+function WR.OnQuiet(message, sender)
+  if not WR.ready or type(message) ~= "string" then return end
+
+  local _, _, missing = string.find(message, "^Error:CantFindPlayer:(.+)$")
+  if missing then
+    WR.QuietMissing(missing)
+    return
+  end
+
+  local _, _, kind, text = string.find(message, "^\t?" .. QUIET_TAG .. "(%a)(.*)$")
+  if not kind or type(sender) ~= "string" or sender == "" then return end
+
+  if sender == WR.me then
+    if kind == "p" then WR.quietWorks = true end
+    return
+  end
+
+  local key = string.lower(sender)
+  local p = WR.Peer(sender)
+  if kind == "b" then
+    p.state, p.asked, WR.partial[key] = nil, nil, nil
+    return
+  elseif kind == "o" then
+    p.state, p.asked, WR.partial[key] = "no", WR.uptime, nil
+    return
+  end
+
+  p.state = "yes"
+  if kind == "h" then
+    WR.QuietSend(sender, WR.QuietOn() and "a" or "o")
+  elseif not WR.QuietOn() and WR.uptime - (p.toldOff or -QUIET_ASK) >= QUIET_ASK then
+    --[[ Quiet is off here, but they think otherwise -- they answered a hello
+         sent before it was switched off. Say so, once in a while; what they
+         sent is still shown below. ]]
+    p.toldOff = WR.uptime
+    WR.QuietSend(sender, "o")
+  end
+  if kind == "c" then
+    local sofar = (WR.partial[key] or "") .. text
+    if string.len(sofar) > QUIET_PIECES then sofar = nil end
+    WR.partial[key] = sofar
+  elseif kind == "m" then
+    local whole = (WR.partial[key] or "") .. text
+    WR.partial[key] = nil
+    WR.FromWindow(WR.Decode(whole), sender)
   end
 end
 
-function WR.Poll(step)
-  if not WR.config.quiet or not WR.FileAPI() then return end
-  WR.sinceOutBeat = WR.sinceOutBeat + (step or 0)
-  if WR.sinceOutBeat >= OUTBOX_BEAT then
-    WR.sinceOutBeat = 0
-    WR.WriteOutbox()
+--[[ The server could not find a character we sent to. If a message went to
+     it just now, that message is lost -- as a whisper to someone offline
+     would be -- and is handled the same way. After nothing but a hello it
+     simply has not logged in yet, which is not news. ]]
+function WR.QuietMissing(name)
+  local key = string.lower(name)
+  local p = WR.peers[key]
+  if not p then return end
+  WR.partial[key] = nil
+  local lost = p.sent and (WR.uptime - p.sent) < 10
+  p.state, p.at, p.sent = "offline", WR.uptime, nil
+  if lost and not WR.Refused(name) then
+    Print(WARN .. name .. " is not online|r -- a message for it was not delivered.")
   end
-  WR.sincePoll = WR.sincePoll + (step or 0)
-  if WR.sincePoll < POLL then return end
-  WR.sincePoll = 0
-  WR.ReadMail()
 end
 
---[[ A message from one of our windows, through the folder: the same kinds of
-     thing a whisper from one could be, handled by the same code. The one
-     difference is that nothing was shown for it on the way in, so a forward
-     is shown here - the way the chat hook shows one that arrives as a
-     whisper, sound included. ]]
-function WR.OnLocal(message, from)
-  if not WR.ready then return end
+--[[ A message from one of your windows over the quiet channel: the same
+     kinds of thing a whisper from one could be, handled by the same code.
+     The one difference is that the chat frame showed nothing for it on the
+     way in, so a forward is shown here -- as the chat hook shows one that
+     arrives as a whisper, sound included. ]]
+function WR.FromWindow(message, from)
   if WR.ShowAlert(message, from) then return end
   if WR.ShowGroupChat(message, from) then return end
   if WR.OnRelayRequest(message, from) then return end
@@ -496,15 +539,83 @@ function WR.OnLocal(message, from)
   WR.lastForward = { from = name, via = from }
   DEFAULT_CHAT_FRAME:AddMessage(WR.InlineText(name, body, from))
   WR.ChatAdd(WR.WindowLine(from, "whisper", name, body), "whisper")
+  WR.PopChat()
   if PlaySound then pcall(PlaySound, "TellMessage") end
 end
 
---- Quiet switched on or off: tell the other windows now, not in ten seconds.
+--[[ At every loading screen, hello to the windows we forward to that have
+     not answered yet, so the first whisper to arrive is not the one kept
+     waiting -- and once a login, prove the server passes these at all. ]]
+function WR.QuietStart()
+  if not WR.ready or not WR.QuietOn() then return end
+  if not WR.pingAt then WR.Ping() end
+  local targets = WR.Targets()
+  for i = 1, table.getn(targets) do
+    if WR.Peer(targets[i]).state ~= "yes" then WR.Hello(targets[i]) end
+  end
+  --[[ Not cached: at login the other windows may not have said they are
+       here yet, and a remembered "nobody" would outlast them. ]]
+  WR.others, WR.othersAt = nil, nil
+end
+
+--- Quiet switched on or off: tell your other windows now.
 function WR.QuietChanged()
-  WR.quietCache = {}
-  WR.sinceBeat = BEAT
-  WR.Beat(0)
-  if WR.config.quiet then WR.WriteOutbox() else WR.WriteOutbox(true) end
+  WR.partial = {}
+  if WR.config.quiet then
+    WR.peers, WR.pingAt, WR.quietWorks = {}, nil, nil
+    WR.QuietStart()
+  else
+    for _, p in pairs(WR.peers) do
+      if p.state == "yes" then WR.QuietSend(p.name, "o") end
+    end
+    WR.peers = {}
+  end
+end
+
+--- Logging out, or a /reload: the windows we talk to go back to asking.
+function WR.QuietLogout()
+  if not WR.QuietOn() then return end
+  for _, p in pairs(WR.peers) do
+    if p.state == "yes" then WR.QuietSend(p.name, "b") end
+  end
+end
+
+--- The quiet channel's line in /wf status.
+function WR.QuietStatus()
+  if not WR.config.quiet then
+    return "quiet: off -- your windows whisper each other"
+  end
+  if not WR.QuietAPI() then
+    return "quiet: on, " .. WARN .. "but this client has no addon messages|r" ..
+      " -- whispering instead"
+  end
+  if not WR.quietWorks and WR.pingAt and (WR.uptime - WR.pingAt) >= QUIET_ASK then
+    return "quiet: on, " .. WARN .. "but the server did not pass a test message " ..
+      "back|r -- whispering instead"
+  end
+  local yes, no, waiting = {}, {}, {}
+  local targets = WR.Targets()
+  for i = 1, table.getn(targets) do
+    local p = WR.peers[string.lower(targets[i])]
+    if p and p.state == "yes" then table.insert(yes, targets[i])
+    elseif p and p.state == "no" then table.insert(no, targets[i])
+    else table.insert(waiting, targets[i]) end
+  end
+  local parts = {}
+  if table.getn(yes) > 0 then
+    table.insert(parts, "no whispers to " .. table.concat(yes, ", "))
+  end
+  if table.getn(no) > 0 then
+    table.insert(parts, table.concat(no, ", ") .. " did not answer (an older " ..
+      "copy, or quiet off there), so it is whispered")
+  end
+  if table.getn(waiting) > 0 then
+    table.insert(parts, "waiting to hear from " .. table.concat(waiting, ", "))
+  end
+  if table.getn(parts) == 0 then
+    table.insert(parts, DIM .. "no other window to talk to yet|r")
+  end
+  return "quiet: " .. OK .. "on|r -- " .. table.concat(parts, "; ")
 end
 
 --- The other character logged in right now, or nil if there isn't one.
@@ -851,8 +962,12 @@ function WR.OnBattlefield()
   WR.confirmed = nowConfirmed
 end
 
-function WR.OnAddonMessage(prefix, message)
+function WR.OnAddonMessage(prefix, message, sender)
   if not WR.ready then return end
+  if prefix == TW_WHISPER then
+    WR.OnQuiet(message, sender)
+    return
+  end
   if not LFT_ADDON_PREFIX or prefix ~= LFT_ADDON_PREFIX then return end
   if not message then return end
 
@@ -937,6 +1052,7 @@ function WR.InlineWhisper(evt)
   local target = this or DEFAULT_CHAT_FRAME
   target:AddMessage(WR.InlineText(name, body, arg2))
   WR.ChatAdd(WR.WindowLine(arg2, "whisper", name, body), "whisper")
+  WR.PopChat()
   return true
 end
 
@@ -1421,6 +1537,22 @@ function WR.ToggleChat()
   WR.ShowChatTab(WR.chatTab or "all")
 end
 
+--[[ A forwarded whisper has just landed here, on the window you are looking
+     at: open the relay window, where it can be answered. Left on the Party
+     tab, Enter would talk to the group instead, so that gives way to All --
+     which follows whatever arrived last, this whisper. It never takes the
+     keyboard: this can land mid-fight, and a box that grabbed focus would
+     swallow every key pressed after it. ]]
+function WR.PopChat()
+  if not WR.config.openChat then return end
+  local f = WR.BuildChat()
+  if f:IsShown() then return end
+  f:Show()
+  local tab = WR.chatTab or "all"
+  if tab == "group" then tab = "all" end
+  WR.ShowChatTab(tab)
+end
+
 --- Say something in the group, through the window that is in it.
 function WR.SayInGroup(text)
   if not WR.ready then return end
@@ -1501,6 +1633,7 @@ function WR.ShowHandle(name, sender)
     DIM .. "  (forwarded by " .. tostring(sender) .. ")|r")
   -- The window shows the whole line; the fallback in chat is only a handle.
   WR.ChatAdd(WR.WindowLine(sender, "whisper", name, ""), "whisper")
+  WR.PopChat()
 end
 
 --[[ Decided a frame later, not here, because whether the chat hook got to
@@ -1634,7 +1767,9 @@ local SWITCHES = {
   { key = "enabled",   label = "Forward whispers",
     note = "the whole thing, on or off" },
   { key = "quiet",     label = "Quiet: no whispers between my windows",
-    note = "windows on this PC talk through the shared folder" },
+    note = "they send addon messages, which chat never shows" },
+  { key = "openChat",  label = "Open the relay window for a whisper",
+    note = "on the window it is forwarded to, without taking the keyboard" },
   { key = "alerts",    label = "Pass on queue pops",
     note = "battleground and dungeon invites expire on a timer" },
   { key = "popup",     label = "Popup for a pop",
@@ -1993,7 +2128,7 @@ function WR.OnWhisper(message, sender)
   local target = targets[1]
   if WR.ShouldReply(sender, target) then
     WR.replied[sender] = time()
-    WR.Queue(WR.ReplyBody(target), sender)
+    WR.Queue(WR.ReplyBody(target), sender, true)
   end
 end
 
@@ -2061,17 +2196,24 @@ function WR.TargetGone(name)
   end
 end
 
-function WR.OnSystem(msg)
-  if not WR.ready then return end
+--[[ A character we sent to is not online: a whisper refused, or an addon
+     message the server could not deliver. True when it is the one we
+     forward to, which is the case that stops things. ]]
+function WR.Refused(name)
   local target = WR.Target()
-  if not target then return end
-  local name = WR.NotFoundName(msg)
-  if not name or string.lower(name) ~= string.lower(target) then return end
+  if not target or string.lower(name) ~= string.lower(target) then return false end
 
   -- The server repeats this for every forward still in flight; the first one
   -- has already stopped everything, so the rest are noise.
-  if WR.offline[target] and (time() - WR.offline[target]) < 60 then return end
+  if WR.offline[target] and (time() - WR.offline[target]) < 60 then return true end
   WR.TargetGone(target)
+  return true
+end
+
+function WR.OnSystem(msg)
+  if not WR.ready then return end
+  local name = WR.NotFoundName(msg)
+  if name then WR.Refused(name) end
 end
 
 ----------------------------------------------------------------------
@@ -2140,22 +2282,9 @@ local function Status()
   Print("clickable name: " ..
     (WR.config.inline and "in the message" or "on a line underneath") ..
     ", chat hook: " .. (WR.hooked and "installed" or WARN .. "not installed|r"))
-  if not WR.config.quiet then
-    Print("quiet: off -- your windows whisper each other")
-  elseif not WR.FileAPI() then
-    Print("quiet: on, " .. WARN .. "but there is no file API|r -- whispering instead")
-  else
-    local quiet = {}
-    local list = WR.Neighbours()
-    for i = 1, table.getn(list) do
-      if WR.QuietTo(list[i]) then table.insert(quiet, list[i]) end
-    end
-    if table.getn(quiet) > 0 then
-      Print("quiet: " .. OK .. "on|r -- no whispers to " .. table.concat(quiet, ", "))
-    else
-      Print("quiet: on -- " .. DIM .. "no other window reading the folder yet|r")
-    end
-  end
+  Print(WR.QuietStatus())
+  Print("relay window for a whisper: " ..
+    (WR.config.openChat and "opens by itself" or "stays shut until /wf chat"))
   local n = table.getn(WR.queue)
   if n > 0 then Print(n .. " message(s) still going out") end
 end
@@ -2201,7 +2330,8 @@ local function Usage()
   line("/wf inline", "clickable name in the message, or on a line under it")
   line("/wf link", "that fallback line, when the message cannot be rewritten")
   line("/wf echo", "note each forward in this window too")
-  line("/wf quiet", "your windows on this PC talk without whispering (on)")
+  line("/wf quiet", "your windows talk in addon messages, not whispers (on)")
+  line("/wf autoopen", "open the relay window when a whisper is forwarded here (on)")
 
   line("/wf demo", "show what a forward looks like, to test clicking")
   line("/wf testpop", "show the popup now")
@@ -2233,6 +2363,8 @@ function WR.Command(input)
       WR.Remember(name, true)
       -- Naming one explicitly is the point of naming one.
       WR.config.auto = false
+      -- Asked now, so the answer is in before the first whisper is.
+      WR.Hello(name)
       Print("forwarding whispers to " .. OK .. name .. "|r.")
     end
 
@@ -2357,13 +2489,20 @@ function WR.Command(input)
     WR.QuietChanged()
     if not WR.config.quiet then
       Print("quiet: off -- your windows whisper each other again.")
-    elseif WR.FileAPI() then
-      Print("quiet: " .. OK .. "on|r -- your windows on this machine leave each " ..
-        "other messages in the shared folder instead of whispering.")
+    elseif WR.QuietAPI() then
+      Print("quiet: " .. OK .. "on|r -- your windows send each other addon " ..
+        "messages instead of whispering. |cffe0a22c/wf status|r shows which " ..
+        "have answered.")
     else
-      Print("quiet: on, but it needs Nampower's file API -- until then your " ..
-        "windows whisper each other as before.")
+      Print("quiet: on, but this client has no addon messages -- your windows " ..
+        "whisper each other as before.")
     end
+
+  elseif cmd == "autoopen" then
+    WR.config.openChat = not WR.config.openChat
+    Print("the relay window " .. (WR.config.openChat
+      and (OK .. "opens|r when a whisper is forwarded here.")
+      or "stays shut until |cffe0a22c/wf chat|r."))
 
   elseif cmd == "group" then
     WR.config.groupChat = not WR.config.groupChat
@@ -2452,12 +2591,6 @@ function WR.Init()
     WR.config.target = nil
   end
 
-  -- The quiet channel: a fresh login, an empty outbox, and saying so.
-  WR.config.seen = WR.config.seen or {}
-  WR.session = time() .. "." .. math.random(1000, 9999)
-  WR.outbox, WR.outSeq = {}, 0
-  WR.WriteOutbox()
-
   --[[ Say we are here straight away rather than in a minute: the other client
        is probably already waiting to find out, and a whisper arriving in the
        first minute would otherwise have nowhere to go. ]]
@@ -2488,6 +2621,7 @@ frame:SetScript("OnEvent", function()
     -- ChatFrame_OnEvent has done so by now, so we wrap theirs rather than
     -- having ours thrown away.
     WR.InstallChatHook()
+    WR.QuietStart()
   elseif event == "CHAT_MSG_WHISPER" then
     WR.OnWhisper(arg1, arg2)
   elseif event == "CHAT_MSG_SYSTEM" then
@@ -2495,7 +2629,7 @@ frame:SetScript("OnEvent", function()
   elseif event == "UPDATE_BATTLEFIELD_STATUS" then
     WR.OnBattlefield()
   elseif event == "CHAT_MSG_ADDON" then
-    WR.OnAddonMessage(arg1, arg2)
+    WR.OnAddonMessage(arg1, arg2, arg4)
 
   elseif event == "CHAT_MSG_PARTY" then
     WR.OnGroupChat("P", arg1, arg2)
@@ -2504,17 +2638,17 @@ frame:SetScript("OnEvent", function()
   elseif event == "CHAT_MSG_RAID_WARNING" then
     WR.OnGroupChat("W", arg1, arg2)
   elseif event == "PLAYER_LOGOUT" then
-    -- So the other windows go back to whispering this one straight away.
-    if WR.ready then WR.WriteOutbox(true) end
+    -- So the other windows stop sending here, and ask again once we are back.
+    if WR.ready then WR.QuietLogout() end
   end
 end)
 
 frame:SetScript("OnUpdate", function()
   if not WR.ready then return end
+  WR.uptime = WR.uptime + (arg1 or 0)
   WR.Settle()
   WR.Beat(arg1 or 0)
   WR.Flush(arg1 or 0)
-  WR.Poll(arg1 or 0)
 end)
 
 SLASH_WHISPERRELAY1 = "/wf"
