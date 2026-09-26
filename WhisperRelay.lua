@@ -687,6 +687,20 @@ end
      you want things to go. A name that merely appeared in the presence file
      is appended, so logging an alt in for a minute cannot displace the
      character you actually chose. ]]
+--[[ A character name the way the server writes it: a capital, then small
+     letters. A name typed "salahaja" still reaches Salahaja -- the server
+     fixes it up -- but everything that comes back is "Salahaja", and a
+     comparison against what was typed then fails. Only A-Z is touched, so
+     the bytes of an accented letter are never bent out of shape. ]]
+function WR.Canonical(name)
+  local first = string.sub(name, 1, 1)
+  if string.find(first, "^[a-z]$") then first = string.upper(first) end
+  local rest = string.gsub(string.sub(name, 2), "[A-Z]", function(c)
+    return string.lower(c)
+  end)
+  return first .. rest
+end
+
 function WR.Remember(name, promote)
   if not name or name == "" or name == WR.me then return end
   local known = WR.config.known or {}
@@ -2351,7 +2365,7 @@ function WR.Command(input)
     Status()
 
   elseif cmd == "to" then
-    local name = string.gsub(rest, "%s.*$", "")
+    local name = WR.Canonical((string.gsub(rest, "%s.*$", "")))
     if name == "" then
       Print("usage: /wf to <character>")
     elseif name == WR.me then
@@ -2482,10 +2496,9 @@ function WR.Command(input)
     WR.TogglePanel()
 
   elseif cmd == "quiet" then
-    local how = string.lower(rest)
-    if how == "on" then WR.config.quiet = true
-    elseif how == "off" then WR.config.quiet = false
-    else WR.config.quiet = not WR.config.quiet end
+    --[[ On its own it means "be quiet", never the opposite. As a toggle,
+         typing it to make sure it was on switched it off. ]]
+    WR.config.quiet = (string.lower(rest) ~= "off")
     WR.QuietChanged()
     if not WR.config.quiet then
       Print("quiet: off -- your windows whisper each other again.")
@@ -2585,6 +2598,11 @@ function WR.Init()
   WR.config = WhisperRelayDB
   WR.me = UnitName("player") or "Unknown"
   WR.ready = true
+
+  -- Saved by an older copy exactly as it was typed.
+  if WR.config.target then WR.config.target = WR.Canonical(WR.config.target) end
+  -- Left by a test build that passed messages through the shared folder.
+  WR.config.seen = nil
 
   if WR.config.target == WR.me then
     -- Saved per account, so logging in on the target itself is normal.

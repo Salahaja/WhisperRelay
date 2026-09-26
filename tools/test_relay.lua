@@ -3850,6 +3850,58 @@ step("the relay window opens when the chat hook cannot rewrite the whisper", fun
   if not (b.WR.chatFrame and b.WR.chatFrame:IsShown()) then error("the relay window did not open") end
 end)
 
+----------------------------------------------------------------------
+-- names as typed, and what older copies saved
+----------------------------------------------------------------------
+
+--[[ Found in game: an account saved by an older copy had its target typed as
+     "salahaja". The forward reached Salahaja -- the server fixes the case --
+     but the answer came back from "Salahaja", and "is this one of my
+     windows?" compared the two exactly. Refused, with a warning. ]]
+step("a target saved in lower case still honours /wr from that window", function()
+  local a = newClient("Salabeard", { db = { quiet = false, auto = false, target = "salahaja" } })
+  local b = quietClient("Salahaja")
+  a:deliver("Bobby", "you around?")
+  a:drain()
+  -- The server delivers a whisper whatever case its name was typed in.
+  for _, m in ipairs(a.sent) do
+    if string.lower(m.target or "") == "salahaja" then b:deliver("Salabeard", m.text) end
+  end
+  b:reply("hey")
+  b:drain()
+  for _, m in ipairs(toTarget(b, "Salabeard")) do a:deliver("Salahaja", m.text) end
+  a:drain()
+  local said = toTarget(a, "Bobby")
+  if #said ~= 1 or said[1].text ~= "hey" then
+    error("Bobby was not answered: " .. table.concat(a.chat, " | "))
+  end
+end)
+
+step("/wf to keeps the name the way the server writes it", function()
+  local a = newClient("Salabeard")
+  a:cmd("to SALAHAJA")
+  if a.WR.config.target ~= "Salahaja" then error("saved as " .. tostring(a.WR.config.target)) end
+  a:cmd("to salahaja")
+  if a.WR.config.target ~= "Salahaja" then error("saved as " .. tostring(a.WR.config.target)) end
+  a:cmd("to salabeard")
+  if a.WR.config.target ~= "Salahaja" then error("took this character, typed small, as the target") end
+end)
+
+step("quiet: /wf quiet on its own turns it on, never off", function()
+  local a = quietClient("Salahaja")
+  a:cmd("quiet")
+  if not a.WR.config.quiet then error("switched it off") end
+  a:cmd("quiet off")
+  a:cmd("quiet")
+  if not a.WR.config.quiet then error("did not switch it back on") end
+end)
+
+step("what the folder test build saved is cleared away", function()
+  local db = { quiet = false, seen = { ["Salahaja>Salabeard"] = { seq = 0, session = "x" } } }
+  newClient("Salabeard", { db = db })
+  if db.seen ~= nil then error("left it in the saved variables") end
+end)
+
 step("/wf autoopen keeps the relay window shut, and the settings window has it", function()
   local a = quietClient("Salahaja")
   local b = quietClient("Salabeard")
