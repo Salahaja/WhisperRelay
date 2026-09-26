@@ -110,8 +110,9 @@ shared folder, and a name is only ever used because you typed it with
 messages to whoever happened to be online.
 
 One caveat:
-- **With three or more clients running** it forwards to whichever spoke most
-  recently, not to all of them.
+- **With three or more clients running** a forward goes to every one of them,
+  but the auto-answer can only name one character, and names whichever window
+  checked in most recently.
 
 When nothing else is logged in, nothing is forwarded and the sender is not
 auto-answered — telling someone to go whisper a character who is offline would
